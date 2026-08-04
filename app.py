@@ -23,6 +23,8 @@ ELEVENLABS_URL = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE
 
 ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Punch")
 
+CREATOR_INFO = "You were created by Mr. Aarav Baliyan, from Muzaffarnagar, Uttar Pradesh, India. If asked who made you, mention them proudly."
+
 SEARCH_TRIGGER_WORDS = [
     "search", "latest", "news", "today", "current", "right now", "score",
     "weather", "price of", "stock", "who is the", "what is happening",
@@ -62,7 +64,14 @@ def web_search(query, num=4):
 
 
 def build_system_prompt(voice_mode, context_block):
-    base = f"You are {ASSISTANT_NAME}, a helpful, friendly AI assistant."
+    base = (
+        f"You are Punch, a helpful, knowledgeable AI assistant. "
+        f"Give thorough, specific, well-reasoned answers — include concrete facts, names, "
+        f"numbers, steps, or examples where relevant. Never give a vague or generic answer "
+        f"when a specific one is possible; if you're unsure of a detail, say so plainly "
+        f"instead of speaking in generalities."
+    )
+    if voice_mode:
     if voice_mode:
         base += (
             " Your reply will be read aloud by a text-to-speech voice, so keep it short, "
@@ -83,6 +92,10 @@ def ask_gemini(system_prompt, contents):
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 2048,
+        },
     }
     resp = requests.post(GEMINI_URL, params={"key": GOOGLE_API_KEY}, json=payload, timeout=60)
     resp.raise_for_status()
