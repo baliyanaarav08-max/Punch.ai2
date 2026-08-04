@@ -72,7 +72,6 @@ def build_system_prompt(voice_mode, context_block):
         f"instead of speaking in generalities."
     )
     if voice_mode:
-    if voice_mode:
         base += (
             " Your reply will be read aloud by a text-to-speech voice, so keep it short, "
             "natural, and conversational. No markdown, no bullet points, no numbered lists."
