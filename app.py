@@ -105,12 +105,55 @@ def build_system_prompt(voice_mode, context_block):
         )
     return base
 
+import threading
+
+_last_call_lock = threading.Lock()
+_last_call_time = [0.0]
+MIN_SECONDS_BETWEEN_CALLS = 5  # keeps us safely under the per-minute rate limit
+
+
+def _throttle():
+    """Blocks just long enough to guarantee we never exceed the per-minute limit."""
+    with _last_call_lock:
+        now = time.time()
+        wait = MIN_SECONDS_BETWEEN_CALLS - (now - _last_call_time[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_time[0] = time.time()
 
 def ask_gemini(system_prompt, contents):
     if not GOOGLE_API_KEY:
         raise RuntimeError("Server is missing GOOGLE_API_KEY")
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 2048,
+        },
+    }
 
-        def _gemini_contents_to_groq_messages(system_prompt, contents):
+    max_retries = 3
+    delay = 2
+
+    for attempt in range(max_retries):
+        _throttle()
+        resp = requests.post(GEMINI_URL, params={"key": GOOGLE_API_KEY}, json=payload, timeout=60)
+        if resp.status_code == 429 and attempt < max_retries - 1:
+            time.sleep(delay)
+            delay *= 2
+            continue
+        resp.raise_for_status()
+        result = resp.json()
+        try:
+            return result["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            return "Sorry, I couldn't generate a response for that."
+
+    raise RuntimeError("Gemini is rate-limited right now — please wait a moment and try again.")
+
+
+def _gemini_contents_to_groq_messages(system_prompt, contents):
     """Converts Gemini-style history into OpenAI/Groq-style messages."""
     messages = [{"role": "system", "content": system_prompt}]
     for turn in contents:
@@ -141,7 +184,7 @@ def ask_groq(system_prompt, contents):
 def ask_cerebras(system_prompt, contents):
     if not CEREBRAS_API_KEY:
         raise RuntimeError("No CEREBRAS_API_KEY set — can't use second backup AI")
-    messages = _gemini_contents_to_groq_messages(system_prompt, contents)  # same OpenAI-style format
+    messages = _gemini_contents_to_groq_messages(system_prompt, contents)
     resp = requests.post(
         CEREBRAS_URL,
         headers={
