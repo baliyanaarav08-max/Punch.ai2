@@ -100,8 +100,19 @@ function unlockAudioPlayback() {
   }
 }
 
+function stopSpeaking() {
+  // Cuts off any reply still playing (either ElevenLabs audio or browser voice)
+  ttsAudio.pause();
+  ttsAudio.currentTime = 0;
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+  voiceOrbBtn.classList.remove('speaking');
+}
+
 voiceOrbBtn.addEventListener('click', () => {
   if (!recognition) return;
+  stopSpeaking();
   unlockAudioPlayback();
   if (isListening) {
     recognition.stop();
@@ -114,6 +125,7 @@ voiceOrbBtn.addEventListener('click', () => {
 });
 
 async function sendVoiceMessage(message) {
+  stopSpeaking();
   voiceStatus.textContent = 'Thinking...';
   try {
     const res = await fetch('/api/voice_chat', {
