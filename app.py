@@ -104,6 +104,27 @@ def build_system_prompt(voice_mode, context_block):
     return base
 
 
+def build_tech_system_prompt(context_block):
+    base = (
+        f"You are {ASSISTANT_NAME}'s Tech Desk — a specialized assistant focused ONLY on "
+        f"technology: tech news, new product launches, and recommendations for laptops, "
+        f"mobile phones, and smartwatches. Give specific model names, approximate current "
+        f"prices, and key specs when recommending anything. Compare options clearly when "
+        f"asked (e.g. pros/cons, price-to-performance). If asked about something unrelated "
+        f"to tech, gently redirect the conversation back to tech news or product advice. "
+        f"ALWAYS quote prices in Indian Rupees (₹), using Indian market pricing — never "
+        f"dollars. If a search result only gives a price in another currency, convert it "
+        f"to an approximate ₹ figure and say it's approximate."
+    )
+    if context_block:
+        base += (
+            "\n\nHere are real-time web search results relevant to the user's question — "
+            f"use them for current prices, specs, and news, since your own knowledge may be "
+            f"outdated for recently launched products:\n{context_block}"
+        )
+    return base
+
+
 # --- Rate-limit throttle for Gemini ---
 _last_call_lock = threading.Lock()
 _last_call_time = [0.0]
@@ -212,6 +233,33 @@ def get_ai_reply(system_prompt, contents):
 @app.route("/")
 def home():
     return render_template("index.html", assistant_name=ASSISTANT_NAME)
+
+
+@app.route("/tech")
+def tech():
+    return render_template("tech.html", assistant_name=ASSISTANT_NAME)
+
+
+@app.route("/api/tech_chat", methods=["POST"])
+def tech_chat():
+    data = request.get_json(force=True)
+    message = (data.get("message") or "").strip()
+    history = data.get("history") or []
+    if not message:
+        return jsonify({"error": "Empty message"}), 400
+
+    # Tech news/prices/specs change constantly, so always pull real-time Indian pricing here
+    context_block = web_search(f"{message} price in India")
+
+    system_prompt = build_tech_system_prompt(context_block)
+    contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
+
+    try:
+        reply = get_ai_reply(system_prompt, contents)
+    except (requests.RequestException, RuntimeError) as e:
+        return jsonify({"error": "AI request failed", "detail": str(e)}), 500
+
+    return jsonify({"reply": reply})
 
 
 @app.route("/api/chat", methods=["POST"])
