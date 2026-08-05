@@ -1,6 +1,7 @@
 import os
 import base64
 import time
+import threading
 
 import requests
 from flask import Flask, request, jsonify, render_template
@@ -28,13 +29,10 @@ SEARCHAPI_URL = "https://www.searchapi.io/api/v1/search"
 
 # --- ElevenLabs (voice output) ---
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-# Default voice = "Rachel", a premade ElevenLabs voice. Swap for any voice_id from your ElevenLabs account.
 ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "OtEfb2LVzIE45wdYe54M")
 ELEVENLABS_URL = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
 
 ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Punch")
-
-CREATOR_INFO = "You were created by Mr. Aarav Baliyan, from Muzaffarnagar, Uttar Pradesh, India. If asked who made you, mention them proudly."
 
 SEARCH_TRIGGER_WORDS = [
     "search", "latest", "news", "today", "current", "right now", "score",
@@ -76,7 +74,7 @@ def web_search(query, num=4):
 
 def build_system_prompt(voice_mode, context_block):
     base = (
-        f"You are Punch, a helpful, knowledgeable AI assistant. "
+        f"You are {ASSISTANT_NAME}, a helpful, knowledgeable AI assistant. "
         f"Give thorough, specific, well-reasoned answers — include concrete facts, names, "
         f"numbers, steps, or examples where relevant. Never give a vague or generic answer "
         f"when a specific one is possible; if you're unsure of a detail, say so plainly "
@@ -105,8 +103,8 @@ def build_system_prompt(voice_mode, context_block):
         )
     return base
 
-import threading
 
+# --- Rate-limit throttle for Gemini ---
 _last_call_lock = threading.Lock()
 _last_call_time = [0.0]
 MIN_SECONDS_BETWEEN_CALLS = 5  # keeps us safely under the per-minute rate limit
@@ -120,6 +118,7 @@ def _throttle():
         if wait > 0:
             time.sleep(wait)
         _last_call_time[0] = time.time()
+
 
 def ask_gemini(system_prompt, contents):
     if not GOOGLE_API_KEY:
@@ -209,22 +208,6 @@ def get_ai_reply(system_prompt, contents):
             errors.append(f"{name}: {e}")
     raise RuntimeError(" | ".join(errors))
 
-    payload = {
-        "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": contents,
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 2048,
-        },
-    }
-    resp = requests.post(GEMINI_URL, params={"key": GOOGLE_API_KEY}, json=payload, timeout=60)
-    resp.raise_for_status()
-    result = resp.json()
-    try:
-        return result["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError):
-        return "Sorry, I couldn't generate a response for that."
-
 
 @app.route("/")
 def home():
@@ -244,7 +227,7 @@ def chat():
     contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
 
     try:
-        reply = ask_gemini(system_prompt, contents)
+        reply = get_ai_reply(system_prompt, contents)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
@@ -264,7 +247,7 @@ def voice_chat():
     contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
 
     try:
-        reply = ask_gemini(system_prompt, contents)
+        reply = get_ai_reply(system_prompt, contents)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
