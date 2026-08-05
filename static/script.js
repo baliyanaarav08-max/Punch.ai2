@@ -77,8 +77,32 @@ if (SpeechRecognition) {
   voiceStatus.textContent = 'Voice input not supported in this browser — try Chrome or Edge';
 }
 
+function unlockAudioPlayback() {
+  // Mobile browsers only allow audio.play()/speechSynthesis to start from a
+  // DIRECT tap. Since our real reply comes back later (after a network call),
+  // we "prime" both here, synchronously, at tap time, so the later async
+  // playback is allowed to go through.
+  ttsAudio.muted = true;
+  const playPromise = ttsAudio.play();
+  if (playPromise) {
+    playPromise
+      .then(() => {
+        ttsAudio.pause();
+        ttsAudio.currentTime = 0;
+        ttsAudio.muted = false;
+      })
+      .catch(() => { ttsAudio.muted = false; });
+  }
+  if ('speechSynthesis' in window) {
+    const unlock = new SpeechSynthesisUtterance('');
+    unlock.volume = 0;
+    window.speechSynthesis.speak(unlock);
+  }
+}
+
 voiceOrbBtn.addEventListener('click', () => {
   if (!recognition) return;
+  unlockAudioPlayback();
   if (isListening) {
     recognition.stop();
     return;
@@ -124,7 +148,19 @@ function playBase64Audio(base64) {
   voiceStatus.textContent = 'Speaking...';
   voiceOrbBtn.classList.add('speaking');
   ttsAudio.src = `data:audio/mpeg;base64,${base64}`;
-  ttsAudio.play();
+  const playPromise = ttsAudio.play();
+  if (playPromise) {
+    playPromise.catch((err) => {
+      console.error('Audio playback blocked:', err);
+      voiceOrbBtn.classList.remove('speaking');
+      voiceStatus.textContent = 'Tap the orb to hear the reply';
+      // Retry playback on the next tap instead of losing the reply entirely
+      voiceOrbBtn.addEventListener('click', function retryPlay() {
+        ttsAudio.play().catch(() => {});
+        voiceOrbBtn.removeEventListener('click', retryPlay);
+      }, { once: true });
+    });
+  }
   ttsAudio.onended = () => {
     voiceOrbBtn.classList.remove('speaking');
     voiceStatus.textContent = 'Tap to talk';
