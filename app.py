@@ -1,5 +1,6 @@
 import os
 import base64
+import time
 
 import requests
 from flask import Flask, request, jsonify, render_template
@@ -8,8 +9,18 @@ app = Flask(__name__)
 
 # --- Gemini (Google AI Studio) ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+
+# --- Groq (backup AI, used only if Gemini fails) ---
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# --- Cerebras (second backup AI, free, used only if both Gemini and Groq fail) ---
+CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
+CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "llama-3.3-70b")
+CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"
 
 # --- SearchAPI.io (real-time Google search) ---
 SEARCHAPI_KEY = os.environ.get("SEARCHAPI_KEY")
@@ -98,6 +109,63 @@ def build_system_prompt(voice_mode, context_block):
 def ask_gemini(system_prompt, contents):
     if not GOOGLE_API_KEY:
         raise RuntimeError("Server is missing GOOGLE_API_KEY")
+
+        def _gemini_contents_to_groq_messages(system_prompt, contents):
+    """Converts Gemini-style history into OpenAI/Groq-style messages."""
+    messages = [{"role": "system", "content": system_prompt}]
+    for turn in contents:
+        role = "assistant" if turn.get("role") == "model" else "user"
+        text = turn.get("parts", [{}])[0].get("text", "")
+        messages.append({"role": role, "content": text})
+    return messages
+
+
+def ask_groq(system_prompt, contents):
+    if not GROQ_API_KEY:
+        raise RuntimeError("No GROQ_API_KEY set — can't use backup AI")
+    messages = _gemini_contents_to_groq_messages(system_prompt, contents)
+    resp = requests.post(
+        GROQ_URL,
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"model": GROQ_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 2048},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    result = resp.json()
+    return result["choices"][0]["message"]["content"]
+
+
+def ask_cerebras(system_prompt, contents):
+    if not CEREBRAS_API_KEY:
+        raise RuntimeError("No CEREBRAS_API_KEY set — can't use second backup AI")
+    messages = _gemini_contents_to_groq_messages(system_prompt, contents)  # same OpenAI-style format
+    resp = requests.post(
+        CEREBRAS_URL,
+        headers={
+            "Authorization": f"Bearer {CEREBRAS_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={"model": CEREBRAS_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 2048},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    result = resp.json()
+    return result["choices"][0]["message"]["content"]
+
+
+def get_ai_reply(system_prompt, contents):
+    """Tries Gemini -> Groq -> Cerebras, in that order, until one succeeds."""
+    errors = []
+    for name, fn in (("gemini", ask_gemini), ("groq", ask_groq), ("cerebras", ask_cerebras)):
+        try:
+            return fn(system_prompt, contents)
+        except (requests.RequestException, RuntimeError) as e:
+            errors.append(f"{name}: {e}")
+    raise RuntimeError(" | ".join(errors))
+
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
