@@ -18,7 +18,7 @@ SEARCHAPI_URL = "https://www.searchapi.io/api/v1/search"
 # --- ElevenLabs (voice output) ---
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 # Default voice = "Rachel", a premade ElevenLabs voice. Swap for any voice_id from your ElevenLabs account.
-ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "OtEfb2LVzIE45wdYe54M")
 ELEVENLABS_URL = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
 
 ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Punch")
