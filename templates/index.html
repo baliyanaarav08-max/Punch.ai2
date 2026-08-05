@@ -81,43 +81,40 @@
 
 <script src="{{ url_for('static', filename='script.js') }}"></script>
 
-<div id="auth-modal-overlay" class="auth-overlay hidden">
-  <div class="auth-card">
-    <button id="close-auth-btn" class="close-btn">&times;</button>
-    <div class="auth-header">
-      <h2 id="auth-title">Welcome to Punch</h2>
-      <p id="auth-subtitle">Sign in or create an account to continue</p>
+<div id="punch-auth-overlay" class="punch-auth-overlay">
+  <div class="punch-auth-card">
+    <div class="punch-auth-header">
+      <h2>Welcome to Punch</h2>
+      <p>Log in or create an account to start chatting</p>
     </div>
 
-    <div class="auth-tabs">
-      <button id="tab-login" class="tab-btn active">Log In</button>
-      <button id="tab-signup" class="tab-btn">Create Account</button>
+    <div class="punch-auth-tabs">
+      <button id="punch-tab-login" class="punch-auth-tab-btn punch-auth-active">Log In</button>
+      <button id="punch-tab-signup" class="punch-auth-tab-btn">Create Account</button>
     </div>
 
-    <form id="auth-form">
-      <div id="name-group" class="input-group hidden">
-        <label for="auth-name">Full Name</label>
-        <input type="text" id="auth-name" placeholder="John Doe" />
+    <form id="punch-auth-form">
+      <div id="punch-name-group" class="punch-auth-group punch-auth-hidden">
+        <label for="punch-auth-name">Full Name</label>
+        <input type="text" id="punch-auth-name" placeholder="John Doe" />
       </div>
 
-      <div class="input-group">
-        <label for="auth-email">Email Address</label>
-        <input type="email" id="auth-email" placeholder="name@example.com" required />
+      <div class="punch-auth-group">
+        <label for="punch-auth-email">Email Address</label>
+        <input type="email" id="punch-auth-email" placeholder="name@example.com" required />
       </div>
 
-      <div class="input-group">
-        <label for="auth-password">Password</label>
-        <input type="password" id="auth-password" placeholder="••••••••" required />
+      <div class="punch-auth-group">
+        <label for="punch-auth-password">Password</label>
+        <input type="password" id="punch-auth-password" placeholder="••••••••" required />
       </div>
 
-      <button type="submit" id="auth-submit-btn" class="btn-primary">Log In</button>
+      <button type="submit" id="punch-auth-submit" class="punch-auth-submit">Log In</button>
     </form>
 
-    <div class="auth-divider">
-      <span>OR</span>
-    </div>
+    <div class="punch-auth-divider"><span>OR</span></div>
 
-    <button id="google-signin-btn" class="btn-google">
+    <button id="punch-google-btn" class="punch-auth-google">
       <svg width="18" height="18" viewBox="0 0 24 24">
         <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
         <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -128,6 +125,122 @@
     </button>
   </div>
 </div>
-<script type="module" src="{{ url_for('static', filename='auth.js') }}"></script>
+
+<script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+      import { 
+        getAuth, 
+        createUserWithEmailAndPassword, 
+        signInWithEmailAndPassword, 
+        GoogleAuthProvider, 
+        signInWithPopup, 
+        onAuthStateChanged 
+      } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+      import { 
+        getFirestore, 
+        doc, 
+        getDoc, 
+        setDoc, 
+        serverTimestamp 
+      } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+      // Your Firebase console keys
+      const firebaseConfig = {
+        apiKey: "AIzaSyCCCR0uImdGlEnzhbcY5pJZzCNN9rORCLA",
+       authDomain: "punch-ai-17e4e.firebaseapp.com",
+       projectId: "punch-ai-17e4e",
+       storageBucket: "punch-ai-17e4e.firebasestorage.ap",
+       messagingSenderId: "638975465606",
+       appId: "1:638975465606:web:20610317d8a04b06fe9907"
+      };
+
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+
+      const overlay = document.getElementById("punch-auth-overlay");
+      const tabLogin = document.getElementById("punch-tab-login");
+      const tabSignup = document.getElementById("punch-tab-signup");
+      const nameGroup = document.getElementById("punch-name-group");
+      const submitBtn = document.getElementById("punch-auth-submit");
+      const form = document.getElementById("punch-auth-form");
+      const googleBtn = document.getElementById("punch-google-btn");
+
+      let isLoginMode = true;
+
+      // Auto check auth state when page loads
+      onAuthStateChanged(auth, (user) => {
+        if (user) {
+          overlay.classList.add("punch-auth-hidden");
+        } else {
+          overlay.classList.remove("punch-auth-hidden");
+        }
+      });
+
+      // Tab logic
+      tabLogin.addEventListener("click", () => {
+        isLoginMode = true;
+        tabLogin.classList.add("punch-auth-active");
+        tabSignup.classList.remove("punch-auth-active");
+        nameGroup.classList.add("punch-auth-hidden");
+        submitBtn.textContent = "Log In";
+      });
+
+      tabSignup.addEventListener("click", () => {
+        isLoginMode = false;
+        tabSignup.classList.add("punch-auth-active");
+        tabLogin.classList.remove("punch-auth-active");
+        nameGroup.classList.remove("punch-auth-hidden");
+        submitBtn.textContent = "Create Account";
+      });
+
+      // Helper to save user in Firestore
+      async function saveUserProfile(user, name) {
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (!userSnap.exists()) {
+          await setDoc(userRef, {
+            uid: user.uid,
+            displayName: user.displayName || name || "User",
+            email: user.email,
+            photoURL: user.photoURL || null,
+            createdAt: serverTimestamp()
+          });
+        }
+      }
+
+      // Email submit
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const email = document.getElementById("punch-auth-email").value;
+        const password = document.getElementById("punch-auth-password").value;
+        const name = document.getElementById("punch-auth-name").value;
+
+        try {
+          if (isLoginMode) {
+            await signInWithEmailAndPassword(auth, email, password);
+          } else {
+            const res = await createUserWithEmailAndPassword(auth, email, password);
+            await saveUserProfile(res.user, name);
+          }
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+
+      // Google submit
+      googleBtn.addEventListener("click", async () => {
+        try {
+          const provider = new GoogleAuthProvider();
+          const res = await signInWithPopup(auth, provider);
+          await saveUserProfile(res.user);
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+    </script>
+
+
 </body>
 </html>
