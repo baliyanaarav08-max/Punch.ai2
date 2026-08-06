@@ -40,23 +40,29 @@
   </div>
 </section>
 
-<section id="chat" class="panel-section">
+<section id="chat" class="panel-section chat-panel-wide">
   <div class="section-head">
     <span class="eyebrow">Type it out</span>
     <h2>Chat with Punch</h2>
   </div>
 
-  <div class="chat-toolbar">
-    <button type="button" id="new-chat-btn" class="new-chat-btn">+ New Chat</button>
-  </div>
-  <div class="chat-card">
-    <div id="chat-window" class="chat-window">
-      <div class="msg assistant">Hey, I'm Punch. Ask me anything — I'll pull in live search results when a question needs current info.</div>
+  <div class="chat-layout">
+    <aside class="chat-sidebar">
+      <button type="button" id="new-chat-btn" class="new-chat-btn full-width">+ New Chat</button>
+      <div id="chat-list" class="chat-list">
+        <div class="chat-list-empty">Log in to see your saved chats</div>
+      </div>
+    </aside>
+
+    <div class="chat-card">
+      <div id="chat-window" class="chat-window">
+        <div class="msg assistant">Hey, I'm Punch. Ask me anything — I'll pull in live search results when a question needs current info.</div>
+      </div>
+      <form id="chat-form" class="chat-input-row">
+        <input id="chat-input" type="text" placeholder="Write a prompt..." autocomplete="off" />
+        <button type="submit" id="send-btn">Send</button>
+      </form>
     </div>
-    <form id="chat-form" class="chat-input-row">
-      <input id="chat-input" type="text" placeholder="Write a prompt..." autocomplete="off" />
-      <button type="submit" id="send-btn">Send</button>
-    </form>
   </div>
 </section>
 

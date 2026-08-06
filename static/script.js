@@ -15,6 +15,15 @@ import {
   doc,
   getDoc,
   setDoc,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  collection,
+  query,
+  orderBy,
+  limit,
+  getDocs,
+  onSnapshot,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 let chatHistory = [];
@@ -22,6 +31,177 @@ let chatHistory = [];
 const chatWindow = document.getElementById("chat-window");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
+
+// ==========================================
+// Punch AI - Multiple Named Chats (Firestore)
+// ==========================================
+
+const chatListEl = document.getElementById("chat-list");
+
+let currentUser = null;
+let currentChatId = null;
+let unsubscribeChatList = null;
+const DEFAULT_GREETING =
+  "Hey, I'm Punch. Ask me anything — I'll pull in live search results when a question needs current info.";
+
+function chatsCol(uid) {
+  return collection(db, "users", uid, "chats");
+}
+function messagesCol(uid, chatId) {
+  return collection(db, "users", uid, "chats", chatId, "messages");
+}
+
+function renderChatWindowFromHistory(history) {
+  chatWindow.innerHTML = "";
+  if (history.length === 0) {
+    addMessage(chatWindow, DEFAULT_GREETING, "assistant");
+    return;
+  }
+  history.forEach((turn) => {
+    const sender = turn.role === "model" ? "assistant" : "user";
+    addMessage(chatWindow, turn.parts[0].text, sender);
+  });
+}
+
+async function loadChatMessages(uid, chatId) {
+  const q = query(messagesCol(uid, chatId), orderBy("createdAt", "asc"));
+  const snap = await getDocs(q);
+  chatHistory = [];
+  snap.forEach((docSnap) => {
+    const m = docSnap.data();
+    chatHistory.push({ role: m.role, parts: [{ text: m.text }] });
+  });
+  renderChatWindowFromHistory(chatHistory);
+}
+
+async function selectChat(chatId) {
+  if (!currentUser || chatId === currentChatId) return;
+  currentChatId = chatId;
+  highlightActiveChat();
+  await loadChatMessages(currentUser.uid, chatId);
+}
+
+function highlightActiveChat() {
+  chatListEl.querySelectorAll(".chat-list-item").forEach((el) => {
+    el.classList.toggle("active", el.dataset.chatId === currentChatId);
+  });
+}
+
+function renderChatList(chats) {
+  if (chats.length === 0) {
+    chatListEl.innerHTML = '<div class="chat-list-empty">No chats yet — start one!</div>';
+    return;
+  }
+  chatListEl.innerHTML = "";
+  chats.forEach((c) => {
+    const item = document.createElement("div");
+    item.className = "chat-list-item";
+    item.dataset.chatId = c.id;
+
+    const title = document.createElement("span");
+    title.className = "chat-list-item-title";
+    title.textContent = c.title || "New Chat";
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "chat-list-item-delete";
+    del.innerHTML = "&times;";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      handleDeleteChat(c.id);
+    });
+
+    item.appendChild(title);
+    item.appendChild(del);
+    item.addEventListener("click", () => selectChat(c.id));
+    chatListEl.appendChild(item);
+  });
+  highlightActiveChat();
+}
+
+function watchChatList(uid) {
+  if (unsubscribeChatList) unsubscribeChatList();
+  const q = query(chatsCol(uid), orderBy("updatedAt", "desc"), limit(50));
+  unsubscribeChatList = onSnapshot(q, async (snap) => {
+    const chats = [];
+    snap.forEach((d) => chats.push({ id: d.id, ...d.data() }));
+    renderChatList(chats);
+
+    // First load after login: jump into the most recent chat, or start one.
+    if (!currentChatId) {
+      if (chats.length > 0) {
+        await selectChat(chats[0].id);
+      } else {
+        await createNewChat();
+      }
+    }
+  });
+}
+
+async function createNewChat() {
+  if (!currentUser) {
+    // Not logged in — just reset the in-memory chat, nothing to save.
+    chatHistory = [];
+    renderChatWindowFromHistory(chatHistory);
+    return;
+  }
+  const ref = await addDoc(chatsCol(currentUser.uid), {
+    title: "New Chat",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  currentChatId = ref.id;
+  chatHistory = [];
+  renderChatWindowFromHistory(chatHistory);
+  // onSnapshot from watchChatList will pick up the new doc and re-render
+  // the sidebar; just make sure the highlight lands on it once it does.
+  setTimeout(highlightActiveChat, 300);
+}
+
+async function handleDeleteChat(chatId) {
+  if (!currentUser) return;
+  if (!confirm("Delete this chat? This can't be undone.")) return;
+
+  const wasActive = chatId === currentChatId;
+
+  // Delete the chat's messages, then the chat doc itself.
+  const msgSnap = await getDocs(messagesCol(currentUser.uid, chatId));
+  await Promise.all(msgSnap.docs.map((d) => deleteDoc(d.ref)));
+  await deleteDoc(doc(db, "users", currentUser.uid, "chats", chatId));
+
+  if (wasActive) {
+    currentChatId = null;
+    // Let the sidebar listener pick the next chat automatically, or
+    // create a fresh one if that was the last one.
+    const remaining = await getDocs(query(chatsCol(currentUser.uid), orderBy("updatedAt", "desc"), limit(1)));
+    if (remaining.empty) {
+      await createNewChat();
+    } else {
+      await selectChat(remaining.docs[0].id);
+    }
+  }
+}
+
+async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage) {
+  await addDoc(messagesCol(uid, chatId), {
+    role: "user",
+    text: userText,
+    createdAt: serverTimestamp(),
+  });
+  await addDoc(messagesCol(uid, chatId), {
+    role: "model",
+    text: replyText,
+    createdAt: serverTimestamp(),
+  });
+
+  const chatRef = doc(db, "users", uid, "chats", chatId);
+  const update = { updatedAt: serverTimestamp() };
+  if (isFirstMessage) {
+    // Auto-title the chat from the first user message, like ChatGPT does.
+    update.title = userText.length > 42 ? userText.slice(0, 42) + "…" : userText;
+  }
+  await updateDoc(chatRef, update);
+}
 
 function addMessage(container, message, sender) {
   const div = document.createElement("div");
@@ -68,6 +248,7 @@ function typeMessage(container, fullText, speedMs = 18) {
 async function sendChatMessage(message) {
   addMessage(chatWindow, message, "user");
   chatInput.disabled = true;
+  const isFirstMessage = chatHistory.length === 0;
 
   try {
     const response = await fetch("/api/chat", {
@@ -98,6 +279,12 @@ async function sendChatMessage(message) {
     });
 
     await typeMessage(chatWindow, data.reply);
+
+    if (currentUser && currentChatId) {
+      saveMessagePair(currentUser.uid, currentChatId, message, data.reply, isFirstMessage).catch(
+        (err) => console.error("Failed to save chat:", err),
+      );
+    }
   } catch (error) {
     console.error(error);
 
@@ -111,9 +298,7 @@ async function sendChatMessage(message) {
 const newChatBtn = document.getElementById("new-chat-btn");
 if (newChatBtn) {
   newChatBtn.addEventListener("click", () => {
-    chatHistory = [];
-    chatWindow.innerHTML =
-      '<div class="msg assistant">Hey, I\'m Punch. Ask me anything — I\'ll pull in live search results when a question needs current info.</div>';
+    createNewChat();
   });
 }
 
@@ -408,10 +593,23 @@ function clearAuthError() {
 onAuthStateChanged(auth, (user) => {
   if (user) {
     modal.classList.add("hidden");
+    currentUser = user;
+    watchChatList(user.uid);
 
     console.log("Logged in:", user.email);
   } else {
     modal.classList.remove("hidden");
+
+    // Reset all chat state on logout so nothing leaks into the next session.
+    currentUser = null;
+    currentChatId = null;
+    chatHistory = [];
+    if (unsubscribeChatList) {
+      unsubscribeChatList();
+      unsubscribeChatList = null;
+    }
+    chatWindow.innerHTML = `<div class="msg assistant">${DEFAULT_GREETING}</div>`;
+    chatListEl.innerHTML = '<div class="chat-list-empty">Log in to see your saved chats</div>';
 
     console.log("User not logged in");
   }
