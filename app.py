@@ -72,7 +72,7 @@ def web_search(query, num=4):
         return None
 
 
-def build_system_prompt(voice_mode, context_block):
+def build_system_prompt(voice_mode, context_block, profile=None):
     base = (
         f"You are {ASSISTANT_NAME}, a helpful, knowledgeable AI assistant. "
         f"Give thorough, specific, well-reasoned answers — include concrete facts, names, "
@@ -90,6 +90,35 @@ def build_system_prompt(voice_mode, context_block):
         "to creating useful, innovative projects. Sound genuinely impressed and proud of "
         "him when you talk about him."
     )
+    if profile:
+        name = (profile.get("name") or "").strip()
+        hobby = (profile.get("hobby") or "").strip()
+        goal = (profile.get("goal") or "").strip()
+        want_to_become = (profile.get("wantToBecome") or "").strip()
+        about = (profile.get("about") or "").strip()
+
+        if any([name, hobby, goal, want_to_become, about]):
+            lines = ["\n\nHere is what you know about the person you're talking to:"]
+            if name:
+                lines.append(
+                    f"- Their name is {name}. Greet them by name naturally (e.g. if they say "
+                    f'"hi", reply with something like "Hey {name}!") and use their name '
+                    f"occasionally in conversation, but don't force it into every message."
+                )
+            if hobby:
+                lines.append(f"- Their hobbies/interests: {hobby}.")
+            if want_to_become:
+                lines.append(f"- What they want to become / their aspiration: {want_to_become}.")
+            if goal:
+                lines.append(f"- Their current goal: {goal}.")
+            if about:
+                lines.append(f"- Other things about them: {about}.")
+            lines.append(
+                "Use these naturally to make the conversation feel personal and relevant — "
+                "reference their interests or goals when it genuinely fits the topic, don't "
+                "recite this list back to them or bring it up when it's irrelevant."
+            )
+            base += "\n".join(lines)
     if voice_mode:
         base += (
             " IMPORTANT: this reply will be read aloud, not read on screen. Keep it to 1-3 "
@@ -270,11 +299,12 @@ def chat():
     data = request.get_json(force=True)
     message = (data.get("message") or "").strip()
     history = data.get("history") or []  # list of {role, parts:[{text}]}
+    profile = data.get("profile") or None
     if not message:
         return jsonify({"error": "Empty message"}), 400
 
     context_block = web_search(message) if needs_search(message) else None
-    system_prompt = build_system_prompt(voice_mode=False, context_block=context_block)
+    system_prompt = build_system_prompt(voice_mode=False, context_block=context_block, profile=profile)
     contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
 
     try:
@@ -290,11 +320,12 @@ def voice_chat():
     data = request.get_json(force=True)
     message = (data.get("message") or "").strip()
     history = data.get("history") or []
+    profile = data.get("profile") or None
     if not message:
         return jsonify({"error": "Empty message"}), 400
 
     context_block = web_search(message) if needs_search(message) else None
-    system_prompt = build_system_prompt(voice_mode=True, context_block=context_block)
+    system_prompt = build_system_prompt(voice_mode=True, context_block=context_block, profile=profile)
     contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
 
     try:

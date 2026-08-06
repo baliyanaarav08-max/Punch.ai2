@@ -33,6 +33,137 @@ const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 
 // ==========================================
+// Punch AI - User Profile (name, hobbies, goals, photo)
+// ==========================================
+let userProfile = {}; // never includes email/password — profile doc is separate from auth
+
+const profileCorner = document.getElementById("profile-corner");
+const profileAvatar = document.getElementById("profile-avatar");
+const customizeBtn = document.getElementById("customize-btn");
+const customizeOverlay = document.getElementById("customize-overlay");
+const customizeClose = document.getElementById("customize-close");
+const customizeForm = document.getElementById("customize-form");
+const customizeAvatarPreview = document.getElementById("customize-avatar-preview");
+const customizePhotoUrl = document.getElementById("customize-photo-url");
+const customizeName = document.getElementById("customize-name");
+const customizeHobby = document.getElementById("customize-hobby");
+const customizeWant = document.getElementById("customize-want");
+const customizeGoal = document.getElementById("customize-goal");
+const customizeAbout = document.getElementById("customize-about");
+const customizeNote = document.getElementById("customize-note");
+
+const DEFAULT_AVATAR =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" rx="20" fill="%238b5cf6"/><circle cx="20" cy="16" r="7" fill="%23fff"/><path d="M6 35c1-8 7-13 14-13s13 5 14 13" fill="%23fff"/></svg>'
+  );
+
+function profileDocRef(uid) {
+  return doc(db, "users", uid, "profile", "info");
+}
+
+function applyAvatar(url) {
+  const src = url && url.trim() ? url.trim() : DEFAULT_AVATAR;
+  profileAvatar.src = src;
+  customizeAvatarPreview.src = src;
+}
+
+function fillCustomizeForm() {
+  customizePhotoUrl.value = userProfile.photoURL || "";
+  customizeName.value = userProfile.name || "";
+  customizeHobby.value = userProfile.hobby || "";
+  customizeWant.value = userProfile.wantToBecome || "";
+  customizeGoal.value = userProfile.goal || "";
+  customizeAbout.value = userProfile.about || "";
+  applyAvatar(userProfile.photoURL);
+}
+
+async function loadProfile(uid) {
+  try {
+    const snap = await getDoc(profileDocRef(uid));
+    userProfile = snap.exists() ? snap.data() : {};
+  } catch (err) {
+    console.error("Failed to load profile:", err);
+    userProfile = {};
+  }
+  profileCorner.classList.remove("hidden");
+  applyAvatar(userProfile.photoURL);
+  fillCustomizeForm();
+}
+
+function clearProfileUI() {
+  userProfile = {};
+  profileCorner.classList.add("hidden");
+  applyAvatar("");
+}
+
+function openCustomize() {
+  if (!currentUser) {
+    modal.classList.remove("hidden");
+    return;
+  }
+  fillCustomizeForm();
+  customizeNote.classList.add("hidden");
+  customizeOverlay.classList.remove("hidden");
+}
+
+function closeCustomize() {
+  customizeOverlay.classList.add("hidden");
+}
+
+customizeBtn.addEventListener("click", openCustomize);
+customizeClose.addEventListener("click", closeCustomize);
+customizeOverlay.addEventListener("click", (e) => {
+  if (e.target === customizeOverlay) closeCustomize();
+});
+profileCorner.addEventListener("click", openCustomize);
+
+customizePhotoUrl.addEventListener("input", () => {
+  applyAvatar(customizePhotoUrl.value);
+});
+
+customizeForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!currentUser) return;
+
+  const saveBtn = document.getElementById("customize-save");
+  saveBtn.disabled = true;
+
+  const newProfile = {
+    name: customizeName.value.trim(),
+    photoURL: customizePhotoUrl.value.trim(),
+    hobby: customizeHobby.value.trim(),
+    wantToBecome: customizeWant.value.trim(),
+    goal: customizeGoal.value.trim(),
+    about: customizeAbout.value.trim(),
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    await setDoc(profileDocRef(currentUser.uid), newProfile, { merge: true });
+    userProfile = { ...userProfile, ...newProfile };
+    applyAvatar(userProfile.photoURL);
+    customizeNote.textContent = "Saved. Punch will use this from your next message.";
+    customizeNote.classList.remove("hidden");
+    setTimeout(() => customizeOverlay.classList.add("hidden"), 900);
+  } catch (err) {
+    console.error("Failed to save profile:", err);
+    customizeNote.textContent = "Couldn't save right now — please try again.";
+    customizeNote.classList.remove("hidden");
+  } finally {
+    saveBtn.disabled = false;
+  }
+});
+
+// Strips fields the AI shouldn't need (nothing sensitive is stored here in
+// the first place — no email/password — but keep this explicit and small).
+function profileForApi() {
+  if (!userProfile) return null;
+  const { name, hobby, wantToBecome, goal, about } = userProfile;
+  return { name, hobby, wantToBecome, goal, about };
+}
+
+// ==========================================
 // Punch AI - Multiple Named Chats (Firestore)
 // ==========================================
 
@@ -259,6 +390,7 @@ async function sendChatMessage(message) {
       body: JSON.stringify({
         message,
         history: chatHistory,
+        profile: profileForApi(),
       }),
     });
 
@@ -457,6 +589,8 @@ async function sendVoiceMessage(message) {
         message,
 
         history: voiceHistory,
+
+        profile: profileForApi(),
       }),
     });
 
@@ -595,6 +729,7 @@ onAuthStateChanged(auth, (user) => {
     modal.classList.add("hidden");
     currentUser = user;
     watchChatList(user.uid);
+    loadProfile(user.uid);
 
     console.log("Logged in:", user.email);
   } else {
@@ -610,6 +745,8 @@ onAuthStateChanged(auth, (user) => {
     }
     chatWindow.innerHTML = `<div class="msg assistant">${DEFAULT_GREETING}</div>`;
     chatListEl.innerHTML = '<div class="chat-list-empty">Log in to see your saved chats</div>';
+    clearProfileUI();
+    closeCustomize();
 
     console.log("User not logged in");
   }
