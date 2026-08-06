@@ -46,6 +46,9 @@
     <h2>Chat with Punch</h2>
   </div>
 
+  <div class="chat-toolbar">
+    <button type="button" id="new-chat-btn" class="new-chat-btn">+ New Chat</button>
+  </div>
   <div class="chat-card">
     <div id="chat-window" class="chat-window">
       <div class="msg assistant">Hey, I'm Punch. Ask me anything — I'll pull in live search results when a question needs current info.</div>
@@ -79,7 +82,7 @@
 
 <audio id="tts-audio" style="display:none;"></audio>
 
-<script src="{{ url_for('static', filename='script.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='script.js') }}"></script>
 
 <div id="punch-auth-overlay" class="punch-auth-overlay">
   <div class="punch-auth-card">
@@ -94,6 +97,8 @@
     </div>
 
     <form id="punch-auth-form">
+      <div id="punch-auth-error" class="punch-auth-error"></div>
+
       <div id="punch-name-group" class="punch-auth-group punch-auth-hidden">
         <label for="punch-auth-name">Full Name</label>
         <input type="text" id="punch-auth-name" placeholder="John Doe" />
@@ -126,288 +131,8 @@
   </div>
 </div>
 
-<style>
 
-  /* Isolated Auth Backdrop Blur Overlay */
-.punch-auth-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  background: rgba(10, 8, 20, 0.85); 
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
-  display: flex !important;
-  justify-content: center !important;
-  align-items: center !important;
-  z-index: 99999 !important; /* Always stays on top of chatbot UI */
-  transition: opacity 0.3s ease, visibility 0.3s ease;
-}
 
-/* Hide modal when authenticated */
-.punch-auth-overlay.punch-auth-hidden {
-  opacity: 0 !important;
-  visibility: hidden !important;
-  pointer-events: none !important;
-}
-
-/* Modal Box */
-.punch-auth-card {
-  position: relative;
-  background: #120e24 !important;
-  border: 1px solid rgba(138, 92, 246, 0.4) !important;
-  box-shadow: 0 0 40px rgba(138, 92, 246, 0.3) !important;
-  border-radius: 20px !important;
-  width: 90% !important;
-  max-width: 420px !important;
-  padding: 30px !important;
-  color: #ffffff !important;
-  box-sizing: border-box !important;
-}
-
-.punch-auth-header h2 {
-  font-size: 24px !important;
-  margin: 0 0 6px 0 !important;
-  text-align: center !important;
-  color: #ffffff !important;
-  font-weight: 700 !important;
-}
-
-.punch-auth-header p {
-  color: #a0aec0 !important;
-  font-size: 14px !important;
-  text-align: center !important;
-  margin: 0 0 20px 0 !important;
-}
-
-/* Tab Switchers */
-.punch-auth-tabs {
-  display: flex !important;
-  background: #1c1738 !important;
-  border-radius: 10px !important;
-  padding: 4px !important;
-  margin-bottom: 20px !important;
-}
-
-.punch-auth-tab-btn {
-  flex: 1 !important;
-  padding: 10px 0 !important;
-  background: transparent !important;
-  border: none !important;
-  color: #a0aec0 !important;
-  border-radius: 8px !important;
-  cursor: pointer !important;
-  font-weight: 600 !important;
-  font-size: 14px !important;
-  transition: all 0.2s ease !important;
-}
-
-.punch-auth-tab-btn.punch-auth-active {
-  background: #8a5cf6 !important;
-  color: #ffffff !important;
-  box-shadow: 0 0 10px rgba(138, 92, 246, 0.5) !important;
-}
-
-/* Inputs */
-.punch-auth-group {
-  margin-bottom: 15px !important;
-  display: flex !important;
-  flex-direction: column !important;
-}
-
-.punch-auth-group.punch-auth-hidden {
-  display: none !important;
-}
-
-.punch-auth-group label {
-  font-size: 12px !important;
-  color: #a0aec0 !important;
-  margin-bottom: 6px !important;
-  text-transform: uppercase !important;
-  letter-spacing: 0.5px !important;
-}
-
-.punch-auth-group input {
-  background: #1c1738 !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  border-radius: 8px !important;
-  padding: 12px 14px !important;
-  color: #ffffff !important;
-  outline: none !important;
-  font-size: 14px !important;
-}
-
-.punch-auth-group input:focus {
-  border-color: #8a5cf6 !important;
-  box-shadow: 0 0 8px rgba(138, 92, 246, 0.4) !important;
-}
-
-/* Action Buttons */
-.punch-auth-submit {
-  width: 100% !important;
-  padding: 12px !important;
-  background: #8a5cf6 !important;
-  border: none !important;
-  border-radius: 10px !important;
-  color: #ffffff !important;
-  font-weight: bold !important;
-  font-size: 15px !important;
-  cursor: pointer !important;
-  box-shadow: 0 0 15px rgba(138, 92, 246, 0.4) !important;
-  margin-top: 10px !important;
-}
-
-.punch-auth-submit:hover {
-  background: #7c3aed !important;
-}
-
-.punch-auth-divider {
-  text-align: center !important;
-  margin: 20px 0 !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
-  line-height: 0.1em !important;
-}
-
-.punch-auth-divider span {
-  background: #120e24 !important;
-  padding: 0 10px !important;
-  color: #a0aec0 !important;
-  font-size: 12px !important;
-}
-
-.punch-auth-google {
-  width: 100% !important;
-  padding: 11px !important;
-  background: #ffffff !important;
-  color: #1a1a1a !important;
-  border: none !important;
-  border-radius: 10px !important;
-  font-weight: 600 !important;
-  font-size: 14px !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 10px !important;
-  cursor: pointer !important;
-}
-
-</style>
-
-<script type="module">
-      import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-      import { 
-        getAuth, 
-        createUserWithEmailAndPassword, 
-        signInWithEmailAndPassword, 
-        GoogleAuthProvider, 
-        signInWithPopup, 
-        onAuthStateChanged 
-      } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-      import { 
-        getFirestore, 
-        doc, 
-        getDoc, 
-        setDoc, 
-        serverTimestamp 
-      } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-
-      // Your Firebase console keys
-      const firebaseConfig = {
-        apiKey: "AIzaSyCCCR0uImdGlEnzhbcY5pJZzCNN9rORCLA",
-       authDomain: "punch-ai-17e4e.firebaseapp.com",
-       projectId: "punch-ai-17e4e",
-       storageBucket: "punch-ai-17e4e.firebasestorage.ap",
-       messagingSenderId: "638975465606",
-       appId: "1:638975465606:web:20610317d8a04b06fe9907"
-      };
-
-      const app = initializeApp(firebaseConfig);
-      const auth = getAuth(app);
-      const db = getFirestore(app);
-
-      const overlay = document.getElementById("punch-auth-overlay");
-      const tabLogin = document.getElementById("punch-tab-login");
-      const tabSignup = document.getElementById("punch-tab-signup");
-      const nameGroup = document.getElementById("punch-name-group");
-      const submitBtn = document.getElementById("punch-auth-submit");
-      const form = document.getElementById("punch-auth-form");
-      const googleBtn = document.getElementById("punch-google-btn");
-
-      let isLoginMode = true;
-
-      // Auto check auth state when page loads
-      onAuthStateChanged(auth, (user) => {
-        if (user) {
-          overlay.classList.add("punch-auth-hidden");
-        } else {
-          overlay.classList.remove("punch-auth-hidden");
-        }
-      });
-
-      // Tab logic
-      tabLogin.addEventListener("click", () => {
-        isLoginMode = true;
-        tabLogin.classList.add("punch-auth-active");
-        tabSignup.classList.remove("punch-auth-active");
-        nameGroup.classList.add("punch-auth-hidden");
-        submitBtn.textContent = "Log In";
-      });
-
-      tabSignup.addEventListener("click", () => {
-        isLoginMode = false;
-        tabSignup.classList.add("punch-auth-active");
-        tabLogin.classList.remove("punch-auth-active");
-        nameGroup.classList.remove("punch-auth-hidden");
-        submitBtn.textContent = "Create Account";
-      });
-
-      // Helper to save user in Firestore
-      async function saveUserProfile(user, name) {
-        const userRef = doc(db, "users", user.uid);
-        const userSnap = await getDoc(userRef);
-
-        if (!userSnap.exists()) {
-          await setDoc(userRef, {
-            uid: user.uid,
-            displayName: user.displayName || name || "User",
-            email: user.email,
-            photoURL: user.photoURL || null,
-            createdAt: serverTimestamp()
-          });
-        }
-      }
-
-      // Email submit
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const email = document.getElementById("punch-auth-email").value;
-        const password = document.getElementById("punch-auth-password").value;
-        const name = document.getElementById("punch-auth-name").value;
-
-        try {
-          if (isLoginMode) {
-            await signInWithEmailAndPassword(auth, email, password);
-          } else {
-            const res = await createUserWithEmailAndPassword(auth, email, password);
-            await saveUserProfile(res.user, name);
-          }
-        } catch (err) {
-          alert(err.message);
-        }
-      });
-
-      // Google submit
-      googleBtn.addEventListener("click", async () => {
-        try {
-          const provider = new GoogleAuthProvider();
-          const res = await signInWithPopup(auth, provider);
-          await saveUserProfile(res.user);
-        } catch (err) {
-          alert(err.message);
-        }
-      });
-    </script>
 
 
 </body>

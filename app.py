@@ -92,8 +92,11 @@ def build_system_prompt(voice_mode, context_block):
     )
     if voice_mode:
         base += (
-            " Your reply will be read aloud by a text-to-speech voice, so keep it short, "
-            "natural, and conversational. No markdown, no bullet points, no numbered lists."
+            " IMPORTANT: this reply will be read aloud, not read on screen. Keep it to 1-3 "
+            "short sentences (roughly 40 words or less) unless the user explicitly asks for "
+            "more detail. Speak naturally and conversationally, like a quick spoken answer, "
+            "not a written one. No markdown, no bullet points, no numbered lists, no "
+            "headings — plain spoken sentences only."
         )
     if context_block:
         base += (
@@ -141,7 +144,7 @@ def _throttle():
         _last_call_time[0] = time.time()
 
 
-def ask_gemini(system_prompt, contents):
+def ask_gemini(system_prompt, contents, max_tokens=2048):
     if not GOOGLE_API_KEY:
         raise RuntimeError("Server is missing GOOGLE_API_KEY")
     payload = {
@@ -149,7 +152,7 @@ def ask_gemini(system_prompt, contents):
         "contents": contents,
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": max_tokens,
         },
     }
 
@@ -183,7 +186,7 @@ def _gemini_contents_to_groq_messages(system_prompt, contents):
     return messages
 
 
-def ask_groq(system_prompt, contents):
+def ask_groq(system_prompt, contents, max_tokens=2048):
     if not GROQ_API_KEY:
         raise RuntimeError("No GROQ_API_KEY set — can't use backup AI")
     messages = _gemini_contents_to_groq_messages(system_prompt, contents)
@@ -193,7 +196,7 @@ def ask_groq(system_prompt, contents):
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json",
         },
-        json={"model": GROQ_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 2048},
+        json={"model": GROQ_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": max_tokens},
         timeout=60,
     )
     resp.raise_for_status()
@@ -201,7 +204,7 @@ def ask_groq(system_prompt, contents):
     return result["choices"][0]["message"]["content"]
 
 
-def ask_cerebras(system_prompt, contents):
+def ask_cerebras(system_prompt, contents, max_tokens=2048):
     if not CEREBRAS_API_KEY:
         raise RuntimeError("No CEREBRAS_API_KEY set — can't use second backup AI")
     messages = _gemini_contents_to_groq_messages(system_prompt, contents)
@@ -211,7 +214,7 @@ def ask_cerebras(system_prompt, contents):
             "Authorization": f"Bearer {CEREBRAS_API_KEY}",
             "Content-Type": "application/json",
         },
-        json={"model": CEREBRAS_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 2048},
+        json={"model": CEREBRAS_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": max_tokens},
         timeout=60,
     )
     resp.raise_for_status()
@@ -219,12 +222,12 @@ def ask_cerebras(system_prompt, contents):
     return result["choices"][0]["message"]["content"]
 
 
-def get_ai_reply(system_prompt, contents):
+def get_ai_reply(system_prompt, contents, max_tokens=2048):
     """Tries Gemini -> Groq -> Cerebras, in that order, until one succeeds."""
     errors = []
     for name, fn in (("gemini", ask_gemini), ("groq", ask_groq), ("cerebras", ask_cerebras)):
         try:
-            return fn(system_prompt, contents)
+            return fn(system_prompt, contents, max_tokens=max_tokens)
         except (requests.RequestException, RuntimeError) as e:
             errors.append(f"{name}: {e}")
     raise RuntimeError(" | ".join(errors))
@@ -295,7 +298,10 @@ def voice_chat():
     contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
 
     try:
-        reply = get_ai_reply(system_prompt, contents)
+        # Voice replies are capped much lower than chat replies (short spoken
+        # answers, not full write-ups) so ElevenLabs isn't asked to read a
+        # wall of text and the transcript on screen stays small too.
+        reply = get_ai_reply(system_prompt, contents, max_tokens=220)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 

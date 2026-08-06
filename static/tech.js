@@ -12,8 +12,38 @@ function addTechMessage(text, role) {
   techChatWindow.scrollTop = techChatWindow.scrollHeight;
 }
 
+function typeTechMessage(fullText, speedMs = 18) {
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  const cursor = document.createElement('span');
+  cursor.className = 'typing-cursor';
+  techChatWindow.appendChild(div);
+  techChatWindow.scrollTop = techChatWindow.scrollHeight;
+
+  const words = fullText.split(' ');
+  let i = 0;
+
+  return new Promise((resolve) => {
+    div.appendChild(cursor);
+    function step() {
+      if (i < words.length) {
+        const chunk = (i === 0 ? '' : ' ') + words[i];
+        cursor.insertAdjacentText('beforebegin', chunk);
+        i++;
+        techChatWindow.scrollTop = techChatWindow.scrollHeight;
+        setTimeout(step, speedMs);
+      } else {
+        cursor.remove();
+        resolve(div);
+      }
+    }
+    step();
+  });
+}
+
 async function sendTechMessage(message) {
   if (!message) return;
+  techChatInput.disabled = true;
   addTechMessage(message, 'user');
 
   try {
@@ -26,12 +56,15 @@ async function sendTechMessage(message) {
     if (data.reply) {
       techHistory.push({ role: 'user', parts: [{ text: message }] });
       techHistory.push({ role: 'model', parts: [{ text: data.reply }] });
-      addTechMessage(data.reply, 'assistant');
+      await typeTechMessage(data.reply);
     } else {
       addTechMessage(data.error || 'Something went wrong.', 'system');
     }
   } catch (err) {
     addTechMessage('Connection error. Is the server running?', 'system');
+  } finally {
+    techChatInput.disabled = false;
+    techChatInput.focus();
   }
 }
 

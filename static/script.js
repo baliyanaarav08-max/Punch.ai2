@@ -1,304 +1,559 @@
-// ---------- Shared state ----------
-let chatHistory = [];   // for #chat section — [{role, parts:[{text}]}]
-let voiceHistory = [];  // separate context thread for #voice section
+// ==========================================
+// Punch AI - Chat Module
+// ==========================================
+import { auth, db } from "./firebase.js";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
-// ---------- Text chat ----------
-const chatWindow = document.getElementById('chat-window');
-const chatForm = document.getElementById('chat-form');
-const chatInput = document.getElementById('chat-input');
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+let chatHistory = [];
 
-function addMessage(container, text, role) {
-  const div = document.createElement('div');
-  div.className = `msg ${role}`;
-  div.textContent = text;
+const chatWindow = document.getElementById("chat-window");
+const chatForm = document.getElementById("chat-form");
+const chatInput = document.getElementById("chat-input");
+
+function addMessage(container, message, sender) {
+  const div = document.createElement("div");
+  div.className = `msg ${sender}`;
+  div.textContent = message;
+
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+  return div;
 }
 
-chatForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const message = chatInput.value.trim();
-  if (!message) return;
-  chatInput.value = '';
-  addMessage(chatWindow, message, 'user');
+// Types the assistant's reply out word-by-word instead of dumping it
+// instantly, matching how the chat product should feel.
+function typeMessage(container, fullText, speedMs = 18) {
+  const div = document.createElement("div");
+  div.className = "msg assistant";
+  const cursor = document.createElement("span");
+  cursor.className = "typing-cursor";
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+
+  const words = fullText.split(" ");
+  let i = 0;
+
+  return new Promise((resolve) => {
+    div.appendChild(cursor);
+
+    function step() {
+      if (i < words.length) {
+        const chunk = (i === 0 ? "" : " ") + words[i];
+        cursor.insertAdjacentText("beforebegin", chunk);
+        i++;
+        container.scrollTop = container.scrollHeight;
+        setTimeout(step, speedMs);
+      } else {
+        cursor.remove();
+        resolve(div);
+      }
+    }
+    step();
+  });
+}
+
+async function sendChatMessage(message) {
+  addMessage(chatWindow, message, "user");
+  chatInput.disabled = true;
 
   try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history: chatHistory })
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message,
+        history: chatHistory,
+      }),
     });
-    const data = await res.json();
-    if (data.reply) {
-      chatHistory.push({ role: 'user', parts: [{ text: message }] });
-      chatHistory.push({ role: 'model', parts: [{ text: data.reply }] });
-      addMessage(chatWindow, data.reply, 'assistant');
-    } else {
-      addMessage(chatWindow, data.error || 'Something went wrong.', 'system');
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || "Server Error");
     }
-  } catch (err) {
-    addMessage(chatWindow, 'Connection error. Is the server running?', 'system');
+
+    chatHistory.push({
+      role: "user",
+      parts: [{ text: message }],
+    });
+
+    chatHistory.push({
+      role: "model",
+      parts: [{ text: data.reply }],
+    });
+
+    await typeMessage(chatWindow, data.reply);
+  } catch (error) {
+    console.error(error);
+
+    addMessage(chatWindow, "⚠️ Unable to contact the server.", "system");
+  } finally {
+    chatInput.disabled = false;
+    chatInput.focus();
   }
+}
+
+const newChatBtn = document.getElementById("new-chat-btn");
+if (newChatBtn) {
+  newChatBtn.addEventListener("click", () => {
+    chatHistory = [];
+    chatWindow.innerHTML =
+      '<div class="msg assistant">Hey, I\'m Punch. Ask me anything — I\'ll pull in live search results when a question needs current info.</div>';
+  });
+}
+
+chatForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+
+  const message = chatInput.value.trim();
+
+  if (message === "") return;
+
+  chatInput.value = "";
+
+  sendChatMessage(message);
 });
 
-// ---------- Voice-only section ----------
-const voiceOrbBtn = document.getElementById('voice-orb-btn');
-const voiceStatus = document.getElementById('voice-status');
-const voiceTranscript = document.getElementById('voice-transcript');
-const ttsAudio = document.getElementById('tts-audio');
+// ==========================================
+// Punch AI - Voice Module
+// ==========================================
 
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const voiceOrbBtn = document.getElementById("voice-orb-btn");
+const voiceStatus = document.getElementById("voice-status");
+const voiceTranscript = document.getElementById("voice-transcript");
+const ttsAudio = document.getElementById("tts-audio");
+
+let voiceHistory = [];
+
+const SpeechRecognition =
+  window.SpeechRecognition || window.webkitSpeechRecognition;
+
 let recognition = null;
 let isListening = false;
 
+// -----------------------------
+// Browser Support
+// -----------------------------
 if (SpeechRecognition) {
   recognition = new SpeechRecognition();
-  recognition.lang = 'en-US';
-  recognition.interimResults = false;
 
-  recognition.onresult = (event) => {
-    const transcript = event.results[0][0].transcript;
-    voiceTranscript.textContent = `You: "${transcript}"`;
-    sendVoiceMessage(transcript);
+  recognition.lang = "en-US";
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+} else {
+  voiceStatus.textContent =
+    "Speech Recognition is not supported in this browser.";
+}
+
+// -----------------------------
+// Recognition Events
+// -----------------------------
+if (recognition) {
+  recognition.onstart = () => {
+    isListening = true;
+
+    voiceOrbBtn.classList.add("listening");
+
+    voiceStatus.textContent = "Listening...";
   };
 
   recognition.onend = () => {
     isListening = false;
-    voiceOrbBtn.classList.remove('listening');
-    if (voiceStatus.textContent === 'Listening...') voiceStatus.textContent = 'Tap to talk';
+
+    voiceOrbBtn.classList.remove("listening");
+
+    voiceStatus.textContent = "Tap to Talk";
   };
 
-  recognition.onerror = () => {
+  recognition.onerror = (event) => {
+    console.error(event.error);
+
     isListening = false;
-    voiceOrbBtn.classList.remove('listening');
-    voiceStatus.textContent = 'Tap to talk';
+
+    voiceOrbBtn.classList.remove("listening");
+
+    voiceStatus.textContent = "Voice Error";
   };
-} else {
-  voiceStatus.textContent = 'Voice input not supported in this browser — try Chrome or Edge';
+
+  recognition.onresult = (event) => {
+    const transcript = event.results[0][0].transcript.trim();
+
+    voiceTranscript.textContent = `You: ${transcript}`;
+
+    sendVoiceMessage(transcript);
+  };
 }
 
-function unlockAudioPlayback() {
-  // Mobile browsers only allow audio.play()/speechSynthesis to start from a
-  // DIRECT tap. Since our real reply comes back later (after a network call),
-  // we "prime" both here, synchronously, at tap time, so the later async
-  // playback is allowed to go through.
+// -----------------------------
+// Audio Controls
+// -----------------------------
+function stopAudio() {
+  ttsAudio.pause();
+
+  ttsAudio.currentTime = 0;
+
+  if ("speechSynthesis" in window) {
+    speechSynthesis.cancel();
+  }
+
+  voiceOrbBtn.classList.remove("speaking");
+}
+
+function unlockAudio() {
   ttsAudio.muted = true;
-  const playPromise = ttsAudio.play();
-  if (playPromise) {
-    playPromise
+
+  const promise = ttsAudio.play();
+
+  if (promise) {
+    promise
       .then(() => {
         ttsAudio.pause();
+
         ttsAudio.currentTime = 0;
+
         ttsAudio.muted = false;
       })
-      .catch(() => { ttsAudio.muted = false; });
-  }
-  if ('speechSynthesis' in window) {
-    const unlock = new SpeechSynthesisUtterance('');
-    unlock.volume = 0;
-    window.speechSynthesis.speak(unlock);
+      .catch(() => {
+        ttsAudio.muted = false;
+      });
   }
 }
 
-function stopSpeaking() {
-  // Cuts off any reply still playing (either ElevenLabs audio or browser voice)
-  ttsAudio.pause();
-  ttsAudio.currentTime = 0;
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-  }
-  voiceOrbBtn.classList.remove('speaking');
-}
-
-voiceOrbBtn.addEventListener('click', () => {
+// -----------------------------
+// Voice Button
+// -----------------------------
+voiceOrbBtn.addEventListener("click", () => {
   if (!recognition) return;
-  stopSpeaking();
-  unlockAudioPlayback();
+
+  stopAudio();
+
+  unlockAudio();
+
   if (isListening) {
     recognition.stop();
+
     return;
   }
-  isListening = true;
-  voiceOrbBtn.classList.add('listening');
-  voiceStatus.textContent = 'Listening...';
+
   recognition.start();
 });
 
+// -----------------------------
+// Send Voice Message
+// -----------------------------
 async function sendVoiceMessage(message) {
-  stopSpeaking();
-  voiceStatus.textContent = 'Thinking...';
+  voiceStatus.textContent = "Thinking...";
+
   try {
-    const res = await fetch('/api/voice_chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history: voiceHistory })
+    const response = await fetch("/api/voice_chat", {
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+      },
+
+      body: JSON.stringify({
+        message,
+
+        history: voiceHistory,
+      }),
     });
-    const data = await res.json();
 
-    if (data.reply) {
-      voiceHistory.push({ role: 'user', parts: [{ text: message }] });
-      voiceHistory.push({ role: 'model', parts: [{ text: data.reply }] });
-      voiceTranscript.textContent = data.reply;
+    const data = await response.json();
 
-      if (data.audio_base64) {
-        playBase64Audio(data.audio_base64);
-      } else {
-        // Fallback to the browser's built-in voice if ElevenLabs isn't configured
-        speakWithBrowser(data.reply);
-      }
+    if (!response.ok) {
+      throw new Error(data.error);
+    }
+
+    voiceHistory.push({
+      role: "user",
+
+      parts: [{ text: message }],
+    });
+
+    voiceHistory.push({
+      role: "model",
+
+      parts: [{ text: data.reply }],
+    });
+
+    voiceTranscript.textContent = data.reply;
+
+    if (data.audio_base64) {
+      playAudio(data.audio_base64);
     } else {
-      voiceStatus.textContent = 'Tap to talk';
-      voiceTranscript.textContent = data.error || 'Something went wrong.';
+      browserSpeak(data.reply);
     }
   } catch (err) {
-    voiceStatus.textContent = 'Tap to talk';
-    voiceTranscript.textContent = 'Connection error. Is the server running?';
+    console.error(err);
+
+    voiceStatus.textContent = "Server Error";
+
+    voiceTranscript.textContent = "Unable to connect.";
   }
 }
 
-function playBase64Audio(base64) {
-  voiceStatus.textContent = 'Speaking...';
-  voiceOrbBtn.classList.add('speaking');
-  ttsAudio.src = `data:audio/mpeg;base64,${base64}`;
-  const playPromise = ttsAudio.play();
-  if (playPromise) {
-    playPromise.catch((err) => {
-      console.error('Audio playback blocked:', err);
-      voiceOrbBtn.classList.remove('speaking');
-      voiceStatus.textContent = 'Tap the orb to hear the reply';
-      // Retry playback on the next tap instead of losing the reply entirely
-      voiceOrbBtn.addEventListener('click', function retryPlay() {
-        ttsAudio.play().catch(() => {});
-        voiceOrbBtn.removeEventListener('click', retryPlay);
-      }, { once: true });
-    });
-  }
+// -----------------------------
+// ElevenLabs Audio
+// -----------------------------
+function playAudio(audioBase64) {
+  voiceStatus.textContent = "Speaking...";
+
+  voiceOrbBtn.classList.add("speaking");
+
+  ttsAudio.src = `data:audio/mpeg;base64,${audioBase64}`;
+
+  ttsAudio.play();
+
   ttsAudio.onended = () => {
-    voiceOrbBtn.classList.remove('speaking');
-    voiceStatus.textContent = 'Tap to talk';
+    voiceStatus.textContent = "Tap to Talk";
+
+    voiceOrbBtn.classList.remove("speaking");
   };
 }
 
-function speakWithBrowser(text) {
-  if (!('speechSynthesis' in window)) {
-    voiceStatus.textContent = 'Tap to talk';
+// -----------------------------
+// Browser TTS Backup
+// -----------------------------
+function browserSpeak(text) {
+  if (!("speechSynthesis" in window)) {
+    voiceStatus.textContent = "Tap to Talk";
+
     return;
   }
-  voiceStatus.textContent = 'Speaking...';
-  voiceOrbBtn.classList.add('speaking');
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.onend = () => {
-    voiceOrbBtn.classList.remove('speaking');
-    voiceStatus.textContent = 'Tap to talk';
+
+  const utterance = new SpeechSynthesisUtterance(text);
+
+  utterance.rate = 1;
+
+  utterance.pitch = 1;
+
+  utterance.volume = 1;
+
+  utterance.onstart = () => {
+    voiceStatus.textContent = "Speaking...";
+
+    voiceOrbBtn.classList.add("speaking");
   };
-  window.speechSynthesis.speak(utter);
+
+  utterance.onend = () => {
+    voiceStatus.textContent = "Tap to Talk";
+
+    voiceOrbBtn.classList.remove("speaking");
+  };
+
+  speechSynthesis.speak(utterance);
 }
 
-import { auth, db } from "./firebase.js";
-import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+// ==========================================
+// Punch AI - Authentication Module
+// ==========================================
 
-const modal = document.getElementById("auth-modal-overlay");
 
-// As soon as the page loads, check if the user is already authenticated
+
+
+// -------------------------------------
+// DOM Elements
+// -------------------------------------
+
+const modal = document.getElementById("punch-auth-overlay");
+
+const loginTab = document.getElementById("punch-tab-login");
+const signupTab = document.getElementById("punch-tab-signup");
+
+const authForm = document.getElementById("punch-auth-form");
+
+const nameGroup = document.getElementById("punch-name-group");
+
+const submitBtn = document.getElementById("punch-auth-submit");
+
+const googleBtn = document.getElementById("punch-google-btn");
+
+const authError = document.getElementById("punch-auth-error");
+
+let loginMode = true;
+
+function showAuthError(message) {
+  if (!authError) return;
+  authError.textContent = message;
+  authError.classList.add("show");
+}
+
+function clearAuthError() {
+  if (!authError) return;
+  authError.textContent = "";
+  authError.classList.remove("show");
+}
+
+// -------------------------------------
+// Authentication State
+// -------------------------------------
+
 onAuthStateChanged(auth, (user) => {
   if (user) {
-    // User is logged in -> Hide blur and reveal Punch website
     modal.classList.add("hidden");
+
+    console.log("Logged in:", user.email);
   } else {
-    // User is NOT logged in -> Keep blur background active
     modal.classList.remove("hidden");
-  }
-});
-import { 
-  createUserWithEmailAndPassword, 
-  signInWithEmailAndPassword, 
-  GoogleAuthProvider, 
-  signInWithPopup, 
-  onAuthStateChanged 
-} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-import { doc, getDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-const modal = document.getElementById("auth-modal-overlay");
-const tabLogin = document.getElementById("tab-login");
-const tabSignup = document.getElementById("tab-signup");
-const nameGroup = document.getElementById("name-group");
-const submitBtn = document.getElementById("auth-submit-btn");
-const authForm = document.getElementById("auth-form");
-let isLoginMode = true;
-
-// 1. Auto-show popup if user is NOT logged in
-onAuthStateChanged(auth, (user) => {
-  if (user) {
-    modal.classList.add("hidden"); // User logged in -> Hide popup
-  } else {
-    modal.classList.remove("hidden"); // User NOT logged in -> Auto-show popup
+    console.log("User not logged in");
   }
 });
 
-// Tab Switch Logic
-tabLogin.addEventListener("click", () => {
-  isLoginMode = true;
-  tabLogin.classList.add("active");
-  tabSignup.classList.remove("active");
-  nameGroup.classList.add("hidden");
+// -------------------------------------
+// Login / Signup Tabs
+// -------------------------------------
+
+loginTab.addEventListener("click", () => {
+  loginMode = true;
+
+  loginTab.classList.add("punch-auth-active");
+  signupTab.classList.remove("punch-auth-active");
+
+  nameGroup.classList.add("punch-auth-hidden");
+
   submitBtn.textContent = "Log In";
+  clearAuthError();
 });
 
-tabSignup.addEventListener("click", () => {
-  isLoginMode = false;
-  tabSignup.classList.add("active");
-  tabLogin.classList.remove("active");
-  nameGroup.classList.remove("hidden");
+signupTab.addEventListener("click", () => {
+  loginMode = false;
+
+  signupTab.classList.add("punch-auth-active");
+  loginTab.classList.remove("punch-auth-active");
+
+  nameGroup.classList.remove("punch-auth-hidden");
+
   submitBtn.textContent = "Create Account";
+  clearAuthError();
 });
 
-// Helper function to save profile to Firestore
-async function saveUserProfile(user, extraName) {
-  const userRef = doc(db, "users", user.uid);
-  const userSnap = await getDoc(userRef);
+// -------------------------------------
+// Save User Profile
+// -------------------------------------
 
-  if (!userSnap.exists()) {
-    await setDoc(userRef, {
-      uid: user.uid,
-      displayName: user.displayName || extraName || "User",
-      email: user.email,
-      photoURL: user.photoURL || null,
-      createdAt: serverTimestamp()
-    });
-  }
+async function saveProfile(user, fullName = "") {
+  const ref = doc(db, "users", user.uid);
+
+  const snap = await getDoc(ref);
+
+  if (snap.exists()) return;
+
+  await setDoc(ref, {
+    uid: user.uid,
+
+    name: user.displayName || fullName || "User",
+
+    email: user.email,
+
+    photoURL: user.photoURL || "",
+
+    createdAt: serverTimestamp(),
+  });
 }
 
-// Form Submit (Login or Sign Up)
+// -------------------------------------
+// Login / Signup
+// -------------------------------------
+
 authForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const email = document.getElementById("auth-email").value;
-  const password = document.getElementById("auth-password").value;
-  const name = document.getElementById("auth-name").value;
+  clearAuthError();
+
+  const email = document.getElementById("punch-auth-email").value.trim();
+
+  const password = document.getElementById("punch-auth-password").value;
+
+  const fullName = document.getElementById("punch-auth-name").value.trim();
+
+  submitBtn.disabled = true;
+  const originalLabel = submitBtn.textContent;
+  submitBtn.textContent = loginMode ? "Logging in..." : "Creating account...";
 
   try {
-    if (isLoginMode) {
+    if (loginMode) {
       await signInWithEmailAndPassword(auth, email, password);
     } else {
-      const res = await createUserWithEmailAndPassword(auth, email, password);
-      await saveUserProfile(res.user, name);
+      const result = await createUserWithEmailAndPassword(
+        auth,
+        email,
+        password,
+      );
+
+      await saveProfile(result.user, fullName);
     }
+
+    authForm.reset();
+    // Don't manually hide the modal here — onAuthStateChanged fires
+    // automatically once Firebase confirms the session and hides it.
   } catch (err) {
-    alert(err.message);
+    console.error(err);
+    showAuthError(friendlyAuthError(err.code) || err.message);
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = originalLabel;
   }
 });
 
-// Google Sign-In
-document.getElementById("google-signin-btn").addEventListener("click", async () => {
+function friendlyAuthError(code) {
+  const map = {
+    "auth/invalid-email": "That email address doesn't look right.",
+    "auth/user-not-found": "No account found with that email.",
+    "auth/wrong-password": "Incorrect password. Try again.",
+    "auth/invalid-credential": "Incorrect email or password.",
+    "auth/email-already-in-use": "An account already exists with that email.",
+    "auth/weak-password": "Password should be at least 6 characters.",
+    "auth/too-many-requests": "Too many attempts. Please wait a moment and try again.",
+    "auth/network-request-failed": "Network error — check your connection.",
+  };
+  return map[code];
+}
+
+// -------------------------------------
+// Google Login
+// -------------------------------------
+
+googleBtn.addEventListener("click", async () => {
+  clearAuthError();
   try {
     const provider = new GoogleAuthProvider();
-    const res = await signInWithPopup(auth, provider);
-    await saveUserProfile(res.user);
+
+    const result = await signInWithPopup(auth, provider);
+
+    await saveProfile(result.user);
   } catch (err) {
-    alert(err.message);
+    console.error(err);
+    if (err.code !== "auth/popup-closed-by-user") {
+      showAuthError(friendlyAuthError(err.code) || err.message);
+    }
   }
 });
 
-// Close Button
-document.getElementById("close-auth-btn").addEventListener("click", () => {
-  modal.classList.add("hidden");
-});
+// -------------------------------------
+// Logout Function
+// -------------------------------------
+
+window.logout = async function () {
+  try {
+    await signOut(auth);
+  } catch (err) {
+    console.error(err);
+  }
+};
