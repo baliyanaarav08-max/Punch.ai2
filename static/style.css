@@ -1041,3 +1041,114 @@ a { color: inherit; text-decoration: none; }
   .customize-card { padding: 24px 20px 22px; }
   .rail-label { max-width: 120px; }
 }
+
+/* ==========================================
+   File uploads — profile photo & chat attachments
+   ========================================== */
+
+/* Profile photo upload button (Customize modal) */
+.upload-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 14px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.upload-btn:hover {
+  border-color: var(--violet-dim);
+  box-shadow: 0 0 12px rgba(139, 92, 246, 0.2);
+}
+.upload-btn:disabled { opacity: 0.6; cursor: default; }
+.upload-status {
+  display: block;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.upload-status.error { color: #f87171; }
+.upload-status.success { color: var(--violet-bright); }
+
+/* Chat attach button — override the generic gradient .chat-input-row button
+   styling since this one should read as a quiet icon action, not a CTA. */
+.chat-input-row button.attach-btn {
+  background: transparent;
+  color: var(--text-dim);
+  padding: 0 12px;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chat-input-row button.attach-btn:hover {
+  color: var(--violet-bright);
+  box-shadow: none;
+}
+.chat-input-row button.attach-btn.has-attachment {
+  color: var(--violet-bright);
+}
+
+/* Pending-attachment preview chip, shown above the input row before send */
+.chat-attach-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.chat-attach-preview.hidden { display: none; }
+.chat-attach-thumb {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+.chat-attach-thumb.hidden { display: none; }
+.chat-attach-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-attach-remove {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.chat-attach-remove:hover {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+/* Image / file attachments rendered inside a sent message bubble */
+.msg-attachment-img {
+  display: block;
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  object-fit: cover;
+}
+.msg-attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+}

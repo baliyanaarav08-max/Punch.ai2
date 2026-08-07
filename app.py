@@ -34,6 +34,11 @@ ELEVENLABS_URL = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE
 
 ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Punch")
 
+# Base64-encoded attachment data is ~33% larger than the original file, so
+# cap the encoded string length to keep well under typical request-size
+# limits (Gemini's inline-image limit and most hosting platforms' body caps).
+MAX_ATTACHMENT_B64_CHARS = 7_000_000  # roughly a 5 MB original file
+
 SEARCH_TRIGGER_WORDS = [
     "search", "latest", "news", "today", "current", "right now", "score",
     "weather", "price of", "stock", "who is the", "what is happening",
@@ -157,6 +162,40 @@ def build_tech_system_prompt(context_block):
     return base
 
 
+def build_user_parts(message, attachment):
+    """Builds a Gemini-style 'parts' list for the user's turn.
+
+    If there's an image attachment, its base64 data is included inline so
+    Gemini's vision can see it. Non-image files (PDF, docx, txt, etc.) aren't
+    parsed — Gemini can't reliably read arbitrary file contents this way —
+    so they're only referenced by name in the text.
+    """
+    text = message or "Please look at what I attached."
+    if attachment and (attachment.get("mimeType") or "").startswith("image/") and attachment.get("data"):
+        return [
+            {"text": text},
+            {"inlineData": {"mimeType": attachment["mimeType"], "data": attachment["data"]}},
+        ]
+    if attachment and attachment.get("name"):
+        return [{"text": f"{text}\n\n[The user also attached a file named '{attachment['name']}'.]"}]
+    return [{"text": text}]
+
+
+def build_fallback_text(message, attachment):
+    """Text-only version of the user's turn, used when the request falls back
+    to Groq/Cerebras — neither of which can see the attached image."""
+    text = message or "Please look at what I attached."
+    if attachment and attachment.get("name"):
+        kind = "image" if (attachment.get("mimeType") or "").startswith("image/") else "file"
+        return (
+            f"{text}\n\n[The user attached an {kind} named '{attachment['name']}'. "
+            "You can't view it right now — let them know you can't see attachments "
+            "in this fallback mode if it's relevant, and answer the rest of their "
+            "message as best you can.]"
+        )
+    return text
+
+
 # --- Rate-limit throttle for Gemini ---
 _last_call_lock = threading.Lock()
 _last_call_time = [0.0]
@@ -251,12 +290,22 @@ def ask_cerebras(system_prompt, contents, max_tokens=2048):
     return result["choices"][0]["message"]["content"]
 
 
-def get_ai_reply(system_prompt, contents, max_tokens=2048):
-    """Tries Gemini -> Groq -> Cerebras, in that order, until one succeeds."""
+def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=None):
+    """Tries Gemini -> Groq -> Cerebras, in that order, until one succeeds.
+
+    `contents` is used for Gemini (may include an inline image). If Gemini
+    fails and we fall back to Groq/Cerebras, `contents_fallback` is used
+    instead — those providers are text-only and can't see attached images.
+    """
+    fallback = contents_fallback if contents_fallback is not None else contents
     errors = []
-    for name, fn in (("gemini", ask_gemini), ("groq", ask_groq), ("cerebras", ask_cerebras)):
+    for name, fn, turns in (
+        ("gemini", ask_gemini, contents),
+        ("groq", ask_groq, fallback),
+        ("cerebras", ask_cerebras, fallback),
+    ):
         try:
-            return fn(system_prompt, contents, max_tokens=max_tokens)
+            return fn(system_prompt, turns, max_tokens=max_tokens)
         except (requests.RequestException, RuntimeError) as e:
             errors.append(f"{name}: {e}")
     raise RuntimeError(" | ".join(errors))
@@ -300,15 +349,25 @@ def chat():
     message = (data.get("message") or "").strip()
     history = data.get("history") or []  # list of {role, parts:[{text}]}
     profile = data.get("profile") or None
-    if not message:
+    attachment = data.get("attachment") or None
+
+    if not message and not attachment:
         return jsonify({"error": "Empty message"}), 400
 
-    context_block = web_search(message) if needs_search(message) else None
+    if attachment and attachment.get("data") and len(attachment["data"]) > MAX_ATTACHMENT_B64_CHARS:
+        return jsonify({"error": "That file is too large — please use something under ~5 MB."}), 413
+
+    context_block = web_search(message) if message and needs_search(message) else None
     system_prompt = build_system_prompt(voice_mode=False, context_block=context_block, profile=profile)
-    contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
+
+    user_parts = build_user_parts(message, attachment)
+    fallback_text = build_fallback_text(message, attachment)
+
+    contents = (history + [{"role": "user", "parts": user_parts}])[-20:]
+    contents_fallback = (history + [{"role": "user", "parts": [{"text": fallback_text}]}])[-20:]
 
     try:
-        reply = get_ai_reply(system_prompt, contents)
+        reply = get_ai_reply(system_prompt, contents, contents_fallback=contents_fallback)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 

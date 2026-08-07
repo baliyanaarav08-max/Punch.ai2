@@ -1,7 +1,7 @@
 // ==========================================
 // Punch AI - Chat Module
 // ==========================================
-import { auth, db } from "./firebase.js";
+import { auth, db, storage } from "./firebase.js";
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -26,11 +26,100 @@ import {
   onSnapshot,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+import {
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js";
 let chatHistory = [];
 
 const chatWindow = document.getElementById("chat-window");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
+
+// ==========================================
+// Punch AI - Chat Attachments (images + files)
+// ==========================================
+const chatAttachInput = document.getElementById("chat-attach-input");
+const chatAttachBtn = document.getElementById("chat-attach-btn");
+const chatAttachPreview = document.getElementById("chat-attach-preview");
+const chatAttachThumb = document.getElementById("chat-attach-thumb");
+const chatAttachName = document.getElementById("chat-attach-name");
+const chatAttachRemove = document.getElementById("chat-attach-remove");
+
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB, matches the server-side cap
+let pendingAttachment = null; // { file, isImage, mimeType, name, localPreviewUrl }
+
+function clearPendingAttachment() {
+  if (pendingAttachment && pendingAttachment.localPreviewUrl) {
+    URL.revokeObjectURL(pendingAttachment.localPreviewUrl);
+  }
+  pendingAttachment = null;
+  chatAttachPreview.classList.add("hidden");
+  chatAttachThumb.classList.add("hidden");
+  chatAttachThumb.src = "";
+  chatAttachName.textContent = "";
+  chatAttachBtn.classList.remove("has-attachment");
+}
+
+chatAttachBtn.addEventListener("click", () => {
+  chatAttachInput.click();
+});
+
+chatAttachInput.addEventListener("change", () => {
+  const file = chatAttachInput.files[0];
+  chatAttachInput.value = "";
+  if (!file) return;
+
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    alert("That file is too large — please use something under 5 MB.");
+    return;
+  }
+
+  const isImage = file.type.startsWith("image/");
+  clearPendingAttachment();
+  pendingAttachment = {
+    file,
+    isImage,
+    mimeType: file.type || "application/octet-stream",
+    name: file.name,
+    localPreviewUrl: isImage ? URL.createObjectURL(file) : null,
+  };
+
+  chatAttachName.textContent = file.name;
+  if (isImage) {
+    chatAttachThumb.src = pendingAttachment.localPreviewUrl;
+    chatAttachThumb.classList.remove("hidden");
+  } else {
+    chatAttachThumb.classList.add("hidden");
+  }
+  chatAttachPreview.classList.remove("hidden");
+  chatAttachBtn.classList.add("has-attachment");
+});
+
+chatAttachRemove.addEventListener("click", clearPendingAttachment);
+
+// Reads a File as a base64 string (no "data:...;base64," prefix), for
+// sending images to the backend for Gemini vision analysis.
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1] || "");
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Uploads the attachment to Firebase Storage (only when logged in, so it can
+// be shown again if the chat is reopened later) and returns its download URL.
+async function uploadAttachmentToStorage(uid, chatId, file) {
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `users/${uid}/chats/${chatId}/attachments/${Date.now()}_${safeName}`;
+  const fileRef = storageRef(storage, path);
+  await uploadBytes(fileRef, file, { contentType: file.type || undefined });
+  return getDownloadURL(fileRef);
+}
 
 // ==========================================
 // Punch AI - User Profile (name, hobbies, goals, photo)
@@ -44,13 +133,18 @@ const customizeOverlay = document.getElementById("customize-overlay");
 const customizeClose = document.getElementById("customize-close");
 const customizeForm = document.getElementById("customize-form");
 const customizeAvatarPreview = document.getElementById("customize-avatar-preview");
-const customizePhotoUrl = document.getElementById("customize-photo-url");
+const customizePhotoFile = document.getElementById("customize-photo-file");
+const customizePhotoBtn = document.getElementById("customize-photo-btn");
+const customizePhotoStatus = document.getElementById("customize-photo-status");
 const customizeName = document.getElementById("customize-name");
 const customizeHobby = document.getElementById("customize-hobby");
 const customizeWant = document.getElementById("customize-want");
 const customizeGoal = document.getElementById("customize-goal");
 const customizeAbout = document.getElementById("customize-about");
 const customizeNote = document.getElementById("customize-note");
+
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
+let pendingPhotoURL = ""; // holds the uploaded download URL until Save is pressed
 
 const DEFAULT_AVATAR =
   "data:image/svg+xml;utf8," +
@@ -69,13 +163,15 @@ function applyAvatar(url) {
 }
 
 function fillCustomizeForm() {
-  customizePhotoUrl.value = userProfile.photoURL || "";
+  pendingPhotoURL = userProfile.photoURL || "";
   customizeName.value = userProfile.name || "";
   customizeHobby.value = userProfile.hobby || "";
   customizeWant.value = userProfile.wantToBecome || "";
   customizeGoal.value = userProfile.goal || "";
   customizeAbout.value = userProfile.about || "";
-  applyAvatar(userProfile.photoURL);
+  customizePhotoStatus.textContent = "";
+  customizePhotoStatus.className = "upload-status";
+  applyAvatar(pendingPhotoURL);
 }
 
 async function loadProfile(uid) {
@@ -118,8 +214,55 @@ customizeOverlay.addEventListener("click", (e) => {
 });
 profileCorner.addEventListener("click", openCustomize);
 
-customizePhotoUrl.addEventListener("input", () => {
-  applyAvatar(customizePhotoUrl.value);
+customizePhotoBtn.addEventListener("click", () => {
+  if (!currentUser) return;
+  customizePhotoFile.click();
+});
+
+customizePhotoFile.addEventListener("change", async () => {
+  const file = customizePhotoFile.files[0];
+  customizePhotoFile.value = ""; // allow re-selecting the same file later
+  if (!file || !currentUser) return;
+
+  if (!file.type.startsWith("image/")) {
+    customizePhotoStatus.textContent = "Please choose an image file.";
+    customizePhotoStatus.className = "upload-status error";
+    return;
+  }
+  if (file.size > MAX_PHOTO_BYTES) {
+    customizePhotoStatus.textContent = "That image is too large — please use one under 5 MB.";
+    customizePhotoStatus.className = "upload-status error";
+    return;
+  }
+
+  // Show an instant local preview while the upload runs.
+  const localPreview = URL.createObjectURL(file);
+  applyAvatar(localPreview);
+
+  customizePhotoBtn.disabled = true;
+  customizePhotoStatus.textContent = "Uploading...";
+  customizePhotoStatus.className = "upload-status";
+
+  try {
+    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+    const path = `users/${currentUser.uid}/profile/avatar.${ext}`;
+    const fileRef = storageRef(storage, path);
+    await uploadBytes(fileRef, file, { contentType: file.type });
+    const url = await getDownloadURL(fileRef);
+
+    pendingPhotoURL = url;
+    applyAvatar(url);
+    customizePhotoStatus.textContent = "Photo uploaded — press Save to keep it.";
+    customizePhotoStatus.className = "upload-status success";
+  } catch (err) {
+    console.error("Photo upload failed:", err);
+    applyAvatar(pendingPhotoURL); // revert preview to last saved photo
+    customizePhotoStatus.textContent = "Upload failed — please try again.";
+    customizePhotoStatus.className = "upload-status error";
+  } finally {
+    customizePhotoBtn.disabled = false;
+    URL.revokeObjectURL(localPreview);
+  }
 });
 
 customizeForm.addEventListener("submit", async (e) => {
@@ -131,7 +274,7 @@ customizeForm.addEventListener("submit", async (e) => {
 
   const newProfile = {
     name: customizeName.value.trim(),
-    photoURL: customizePhotoUrl.value.trim(),
+    photoURL: pendingPhotoURL,
     hobby: customizeHobby.value.trim(),
     wantToBecome: customizeWant.value.trim(),
     goal: customizeGoal.value.trim(),
@@ -198,11 +341,31 @@ async function loadChatMessages(uid, chatId) {
   const q = query(messagesCol(uid, chatId), orderBy("createdAt", "asc"));
   const snap = await getDocs(q);
   chatHistory = [];
+  const displayMessages = [];
   snap.forEach((docSnap) => {
     const m = docSnap.data();
     chatHistory.push({ role: m.role, parts: [{ text: m.text }] });
+    displayMessages.push({
+      sender: m.role === "model" ? "assistant" : "user",
+      text: m.text,
+      attachmentURL: m.attachmentURL || null,
+      attachmentType: m.attachmentType || null,
+      attachmentName: m.attachmentName || null,
+    });
   });
-  renderChatWindowFromHistory(chatHistory);
+
+  chatWindow.innerHTML = "";
+  if (displayMessages.length === 0) {
+    addMessage(chatWindow, DEFAULT_GREETING, "assistant");
+  } else {
+    displayMessages.forEach((m) => {
+      addMessage(chatWindow, m.text, m.sender, {
+        url: m.attachmentURL,
+        type: m.attachmentType,
+        name: m.attachmentName,
+      });
+    });
+  }
 }
 
 async function selectChat(chatId) {
@@ -313,12 +476,18 @@ async function handleDeleteChat(chatId) {
   }
 }
 
-async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage) {
-  await addDoc(messagesCol(uid, chatId), {
+async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage, attachmentInfo) {
+  const userDoc = {
     role: "user",
     text: userText,
     createdAt: serverTimestamp(),
-  });
+  };
+  if (attachmentInfo && attachmentInfo.url) {
+    userDoc.attachmentURL = attachmentInfo.url;
+    userDoc.attachmentType = attachmentInfo.isImage ? "image" : "file";
+    userDoc.attachmentName = attachmentInfo.name;
+  }
+  await addDoc(messagesCol(uid, chatId), userDoc);
   await addDoc(messagesCol(uid, chatId), {
     role: "model",
     text: replyText,
@@ -329,15 +498,36 @@ async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage)
   const update = { updatedAt: serverTimestamp() };
   if (isFirstMessage) {
     // Auto-title the chat from the first user message, like ChatGPT does.
-    update.title = userText.length > 42 ? userText.slice(0, 42) + "…" : userText;
+    const titleSource = userText || (attachmentInfo ? attachmentInfo.name : "New Chat");
+    update.title = titleSource.length > 42 ? titleSource.slice(0, 42) + "…" : titleSource;
   }
   await updateDoc(chatRef, update);
 }
 
-function addMessage(container, message, sender) {
+function addMessage(container, message, sender, attachment) {
   const div = document.createElement("div");
   div.className = `msg ${sender}`;
-  div.textContent = message;
+
+  if (attachment && (attachment.url || attachment.name)) {
+    if ((attachment.type === "image" || attachment.isImage) && attachment.url) {
+      const img = document.createElement("img");
+      img.className = "msg-attachment-img";
+      img.src = attachment.url;
+      img.alt = attachment.name || "Attached image";
+      div.appendChild(img);
+    } else if (attachment.name) {
+      const chip = document.createElement("div");
+      chip.className = "msg-attachment-file";
+      chip.textContent = `📎 ${attachment.name}`;
+      div.appendChild(chip);
+    }
+  }
+
+  if (message) {
+    const textNode = document.createElement("div");
+    textNode.textContent = message;
+    div.appendChild(textNode);
+  }
 
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
@@ -376,12 +566,32 @@ function typeMessage(container, fullText, speedMs = 18) {
   });
 }
 
-async function sendChatMessage(message) {
-  addMessage(chatWindow, message, "user");
+async function sendChatMessage(message, attachment) {
   chatInput.disabled = true;
+  chatAttachBtn.disabled = true;
   const isFirstMessage = chatHistory.length === 0;
 
+  // Snapshot the attachment before clearing the input area, and build a
+  // local preview URL immediately so the user's bubble shows the image
+  // right away instead of waiting on any network round trip.
+  let displayUrl = attachment ? attachment.localPreviewUrl : null;
+  addMessage(chatWindow, message, "user", attachment ? { url: displayUrl, isImage: attachment.isImage, name: attachment.name } : null);
+
   try {
+    let attachmentPayload = null;
+    let base64Data = null;
+
+    if (attachment) {
+      if (attachment.isImage) {
+        base64Data = await fileToBase64(attachment.file);
+      }
+      attachmentPayload = {
+        mimeType: attachment.mimeType,
+        name: attachment.name,
+        data: base64Data, // only present for images — backend ignores it otherwise
+      };
+    }
+
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: {
@@ -391,6 +601,7 @@ async function sendChatMessage(message) {
         message,
         history: chatHistory,
         profile: profileForApi(),
+        attachment: attachmentPayload,
       }),
     });
 
@@ -400,9 +611,15 @@ async function sendChatMessage(message) {
       throw new Error(data.error || "Server Error");
     }
 
+    // Keep the API-facing history text-only — the image is only needed for
+    // the turn it was sent on, not replayed into every future request.
+    const historyText = attachment
+      ? `${message}${message ? "\n\n" : ""}[Attached: ${attachment.name}]`
+      : message;
+
     chatHistory.push({
       role: "user",
-      parts: [{ text: message }],
+      parts: [{ text: historyText }],
     });
 
     chatHistory.push({
@@ -413,9 +630,18 @@ async function sendChatMessage(message) {
     await typeMessage(chatWindow, data.reply);
 
     if (currentUser && currentChatId) {
-      saveMessagePair(currentUser.uid, currentChatId, message, data.reply, isFirstMessage).catch(
-        (err) => console.error("Failed to save chat:", err),
-      );
+      (async () => {
+        let attachmentInfo = null;
+        if (attachment) {
+          try {
+            const storedUrl = await uploadAttachmentToStorage(currentUser.uid, currentChatId, attachment.file);
+            attachmentInfo = { url: storedUrl, isImage: attachment.isImage, name: attachment.name };
+          } catch (err) {
+            console.error("Attachment upload to Storage failed:", err);
+          }
+        }
+        return saveMessagePair(currentUser.uid, currentChatId, message, data.reply, isFirstMessage, attachmentInfo);
+      })().catch((err) => console.error("Failed to save chat:", err));
     }
   } catch (error) {
     console.error(error);
@@ -423,13 +649,22 @@ async function sendChatMessage(message) {
     addMessage(chatWindow, "⚠️ Unable to contact the server.", "system");
   } finally {
     chatInput.disabled = false;
+    chatAttachBtn.disabled = false;
     chatInput.focus();
+    // Don't revoke displayUrl here — the bubble in chatWindow still uses it
+    // for this session; it'll be released naturally on page reload.
+    pendingAttachment = null;
+    chatAttachPreview.classList.add("hidden");
+    chatAttachThumb.classList.add("hidden");
+    chatAttachName.textContent = "";
+    chatAttachBtn.classList.remove("has-attachment");
   }
 }
 
 const newChatBtn = document.getElementById("new-chat-btn");
 if (newChatBtn) {
   newChatBtn.addEventListener("click", () => {
+    clearPendingAttachment();
     createNewChat();
   });
 }
@@ -438,12 +673,13 @@ chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
 
   const message = chatInput.value.trim();
+  const attachment = pendingAttachment;
 
-  if (message === "") return;
+  if (message === "" && !attachment) return;
 
   chatInput.value = "";
 
-  sendChatMessage(message);
+  sendChatMessage(message, attachment);
 });
 
 // ==========================================
