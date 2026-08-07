@@ -533,8 +533,41 @@ a { color: inherit; text-decoration: none; }
 
 @media (max-width: 860px) {
   .chat-layout { flex-direction: column; }
-  .chat-sidebar { width: 100%; }
-  .chat-list { max-height: 180px; }
+  .chat-sidebar { width: 100%; padding: 10px; }
+
+  /* Hover-to-reveal labels don't work on touch, so on mobile the rail
+     becomes a compact horizontal tab bar with labels always visible
+     instead of three cramped bare icons stacked in a column. */
+  .sidebar-rail {
+    flex-direction: row;
+    gap: 6px;
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+  }
+  .rail-btn {
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 9px 4px;
+    text-align: center;
+  }
+  .rail-label {
+    max-width: none;
+    opacity: 1;
+    font-size: 10.5px;
+    white-space: nowrap;
+    overflow: visible;
+  }
+  .rail-btn:hover .rail-label,
+  .rail-btn .rail-label {
+    max-width: none;
+    opacity: 1;
+  }
+
+  .chat-list { max-height: 130px; }
+  .chat-list-empty { padding: 6px; font-size: 12px; }
 }
 
 /* ---------- Typewriter cursor ---------- */
@@ -789,19 +822,23 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* ==========================================
-   Profile photo — top-left corner
+   Profile photo — now a normal flex child
+   inside .nav-right, so it can never overlap
+   the logo at any screen width.
    ========================================== */
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
 .profile-corner {
-  position: fixed;
-  top: 16px;
-  left: 16px;
-  z-index: 25;
   cursor: pointer;
+  line-height: 0;
 }
 .profile-corner.hidden { display: none; }
 .profile-avatar {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   object-fit: cover;
   border: 2px solid var(--violet-dim);

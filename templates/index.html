@@ -10,11 +10,6 @@
 </head>
 <body>
 
-<!-- Top-left profile photo corner -->
-<div id="profile-corner" class="profile-corner hidden">
-  <img id="profile-avatar" class="profile-avatar" src="" alt="Your photo" />
-</div>
-
 <nav class="navbar">
   <div class="logo">
     <span class="logo-mark"></span>
@@ -25,7 +20,12 @@
     <a href="#chat">Chat</a>
     <a href="#voice">Voice</a>
   </div>
-  <a href="#chat" class="btn-primary">Get Started</a>
+  <div class="nav-right">
+    <div id="profile-corner" class="profile-corner hidden">
+      <img id="profile-avatar" class="profile-avatar" src="" alt="Your photo" />
+    </div>
+    <a href="#chat" class="btn-primary">Get Started</a>
+  </div>
 </nav>
 
 <section id="home" class="hero">
