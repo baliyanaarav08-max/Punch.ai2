@@ -67,9 +67,9 @@ chatAttachBtn.addEventListener("click", () => {
   chatAttachInput.click();
 });
 
-chatAttachInput.addEventListener("change", () => {
-  const file = chatAttachInput.files[0];
-  chatAttachInput.value = "";
+// Shared by both the file picker and drag-and-drop, so a dropped file goes
+// through the exact same size check / preview / pendingAttachment setup.
+function handleSelectedFile(file) {
   if (!file) return;
 
   if (file.size > MAX_ATTACHMENT_BYTES) {
@@ -96,9 +96,67 @@ chatAttachInput.addEventListener("change", () => {
   }
   chatAttachPreview.classList.remove("hidden");
   chatAttachBtn.classList.add("has-attachment");
+}
+
+chatAttachInput.addEventListener("change", () => {
+  const file = chatAttachInput.files[0];
+  chatAttachInput.value = "";
+  handleSelectedFile(file);
 });
 
 chatAttachRemove.addEventListener("click", clearPendingAttachment);
+
+// ==========================================
+// Punch AI - Drag & Drop
+// ==========================================
+const dropOverlay = document.getElementById("drop-overlay");
+let dragCounter = 0; // tracks nested dragenter/dragleave firing on child elements
+
+function showDropOverlay() {
+  dropOverlay.classList.remove("hidden");
+}
+function hideDropOverlay() {
+  dropOverlay.classList.add("hidden");
+  dragCounter = 0;
+}
+
+window.addEventListener("dragenter", (e) => {
+  // Ignore drags that aren't carrying files (e.g. dragging selected text).
+  if (!e.dataTransfer || !e.dataTransfer.types.includes("Files")) return;
+  e.preventDefault();
+  dragCounter++;
+  showDropOverlay();
+});
+
+window.addEventListener("dragover", (e) => {
+  // Required or the browser's default action (opening the file) fires
+  // instead of our drop handler.
+  if (!e.dataTransfer || !e.dataTransfer.types.includes("Files")) return;
+  e.preventDefault();
+});
+
+window.addEventListener("dragleave", (e) => {
+  if (!e.dataTransfer || !e.dataTransfer.types.includes("Files")) return;
+  e.preventDefault();
+  dragCounter--;
+  if (dragCounter <= 0) hideDropOverlay();
+});
+
+window.addEventListener("drop", (e) => {
+  if (!e.dataTransfer || !e.dataTransfer.types.includes("Files")) return;
+  e.preventDefault();
+  hideDropOverlay();
+
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!file) return;
+
+  handleSelectedFile(file);
+
+  // Bring the dropped file into view in the chat card and focus the
+  // input so the person can just start typing their prompt about it.
+  document.getElementById("chat")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  chatInput.focus();
+});
 
 // Reads a File as a base64 string (no "data:...;base64," prefix), for
 // sending images to the backend for Gemini vision analysis.
