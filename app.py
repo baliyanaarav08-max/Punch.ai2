@@ -1,5 +1,6 @@
 import os
 import base64
+import json
 import time
 import threading
 
@@ -77,7 +78,7 @@ def web_search(query, num=4):
         return None
 
 
-def build_system_prompt(voice_mode, context_block, profile=None):
+def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=False):
     base = (
         f"You are {ASSISTANT_NAME}, a helpful, knowledgeable AI assistant. "
         f"Give thorough, specific, well-reasoned answers — include concrete facts, names, "
@@ -131,6 +132,22 @@ def build_system_prompt(voice_mode, context_block, profile=None):
             "more detail. Speak naturally and conversationally, like a quick spoken answer, "
             "not a written one. No markdown, no bullet points, no numbered lists, no "
             "headings — plain spoken sentences only."
+        )
+    if allow_clarify:
+        base += (
+            "\n\nBefore you answer, check whether the user's latest message is vague, "
+            "underspecified, or genuinely ambiguous enough that asking a short clarifying "
+            "question first would let you give a noticeably better answer (for example: "
+            "missing a key detail you'd otherwise have to guess, or a request that could "
+            "reasonably mean several different things). Do NOT do this for greetings, "
+            "simple factual questions, or anything you can already answer well.\n\n"
+            "If — and only if — clarification would genuinely help, respond with ONLY a "
+            "single-line JSON object and nothing else before or after it, in exactly this "
+            'shape: {"clarify": true, "question": "<your short clarifying question>", '
+            '"options": ["<short option 1>", "<short option 2>", "<short option 3>"]} — '
+            "2 to 4 short options, each just a few words, covering the most likely "
+            "interpretations. Do not wrap it in markdown code fences.\n\n"
+            "Otherwise, ignore all of this and just answer the user normally in plain text."
         )
     if context_block:
         base += (
@@ -311,6 +328,37 @@ def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=Non
     raise RuntimeError(" | ".join(errors))
 
 
+def parse_clarify_reply(reply_text):
+    """If the model responded with a clarify-question JSON object (per the
+    allow_clarify instruction in build_system_prompt), parse and return it
+    as {clarify, question, options}. Returns None for a normal text reply."""
+    if not reply_text:
+        return None
+    candidate = reply_text.strip()
+    # Strip accidental markdown code fences the model sometimes adds anyway.
+    if candidate.startswith("```"):
+        candidate = candidate.strip("`")
+        if candidate.lower().startswith("json"):
+            candidate = candidate[4:]
+        candidate = candidate.strip()
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or parsed.get("clarify") is not True:
+        return None
+    question = str(parsed.get("question") or "").strip()
+    if not question:
+        return None
+    raw_options = parsed.get("options") or []
+    if not isinstance(raw_options, list):
+        raw_options = []
+    options = [str(o).strip() for o in raw_options if str(o).strip()][:4]
+    return {"clarify": True, "question": question, "options": options}
+
+
 @app.route("/")
 def home():
     return render_template("index.html", assistant_name=ASSISTANT_NAME)
@@ -358,7 +406,9 @@ def chat():
         return jsonify({"error": "That file is too large — please use something under ~5 MB."}), 413
 
     context_block = web_search(message) if message and needs_search(message) else None
-    system_prompt = build_system_prompt(voice_mode=False, context_block=context_block, profile=profile)
+    system_prompt = build_system_prompt(
+        voice_mode=False, context_block=context_block, profile=profile, allow_clarify=True
+    )
 
     user_parts = build_user_parts(message, attachment)
     fallback_text = build_fallback_text(message, attachment)
@@ -370,6 +420,10 @@ def chat():
         reply = get_ai_reply(system_prompt, contents, contents_fallback=contents_fallback)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
+
+    clarify_payload = parse_clarify_reply(reply)
+    if clarify_payload:
+        return jsonify(clarify_payload)
 
     return jsonify({"reply": reply})
 

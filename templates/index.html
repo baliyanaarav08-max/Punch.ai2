@@ -7,6 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 </head>
 <body>
 
@@ -73,6 +77,9 @@
           <span class="rail-label">Tech Desk</span>
         </a>
       </nav>
+      <div class="chat-search-row">
+        <input type="text" id="chat-search-input" class="chat-search-input" placeholder="Search chats..." autocomplete="off" />
+      </div>
       <div id="chat-list" class="chat-list">
         <div class="chat-list-empty">Log in to see your saved chats</div>
       </div>
@@ -81,6 +88,10 @@
     <div class="chat-card">
       <div id="chat-window" class="chat-window">
         <div class="msg assistant">Hey, I'm Punch. Ask me anything — I'll pull in live search results when a question needs current info.</div>
+      </div>
+      <div id="clarify-card" class="clarify-card hidden">
+        <div id="clarify-question" class="clarify-question"></div>
+        <div id="clarify-options" class="clarify-options"></div>
       </div>
       <div id="chat-attach-preview" class="chat-attach-preview hidden">
         <img id="chat-attach-thumb" class="chat-attach-thumb hidden" src="" alt="" />

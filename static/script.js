@@ -369,12 +369,22 @@ function profileForApi() {
 // ==========================================
 
 const chatListEl = document.getElementById("chat-list");
+const chatSearchInput = document.getElementById("chat-search-input");
 
 let currentUser = null;
 let currentChatId = null;
 let unsubscribeChatList = null;
+let allChatsCache = [];
+let chatSearchTerm = "";
 const DEFAULT_GREETING =
   "Hey, I'm Punch. Ask me anything — I'll pull in live search results when a question needs current info.";
+
+if (chatSearchInput) {
+  chatSearchInput.addEventListener("input", () => {
+    chatSearchTerm = chatSearchInput.value;
+    applyChatListFilterAndRender();
+  });
+}
 
 function chatsCol(uid) {
   return collection(db, "users", uid, "chats");
@@ -389,9 +399,9 @@ function renderChatWindowFromHistory(history) {
     addMessage(chatWindow, DEFAULT_GREETING, "assistant");
     return;
   }
-  history.forEach((turn) => {
+  history.forEach((turn, idx) => {
     const sender = turn.role === "model" ? "assistant" : "user";
-    addMessage(chatWindow, turn.parts[0].text, sender);
+    addMessage(chatWindow, turn.parts[0].text, sender, null, idx);
   });
 }
 
@@ -416,12 +426,12 @@ async function loadChatMessages(uid, chatId) {
   if (displayMessages.length === 0) {
     addMessage(chatWindow, DEFAULT_GREETING, "assistant");
   } else {
-    displayMessages.forEach((m) => {
+    displayMessages.forEach((m, idx) => {
       addMessage(chatWindow, m.text, m.sender, {
         url: m.attachmentURL,
         type: m.attachmentType,
         name: m.attachmentName,
-      });
+      }, idx);
     });
   }
 }
@@ -430,6 +440,8 @@ async function selectChat(chatId) {
   if (!currentUser || chatId === currentChatId) return;
   currentChatId = chatId;
   highlightActiveChat();
+  stopSpeaking();
+  hideClarifyCard();
   await loadChatMessages(currentUser.uid, chatId);
 }
 
@@ -440,15 +452,43 @@ function highlightActiveChat() {
 }
 
 function renderChatList(chats) {
-  if (chats.length === 0) {
-    chatListEl.innerHTML = '<div class="chat-list-empty">No chats yet — start one!</div>';
+  allChatsCache = chats;
+  applyChatListFilterAndRender();
+}
+
+function applyChatListFilterAndRender() {
+  let chats = allChatsCache;
+  const term = chatSearchTerm.trim().toLowerCase();
+  if (term) {
+    chats = chats.filter((c) => (c.title || "New Chat").toLowerCase().includes(term));
+  }
+  // Pinned chats float to the top, each group still newest-first.
+  const pinned = chats.filter((c) => c.pinned);
+  const rest = chats.filter((c) => !c.pinned);
+  const ordered = [...pinned, ...rest];
+
+  if (ordered.length === 0) {
+    chatListEl.innerHTML = `<div class="chat-list-empty">${
+      term ? "No chats match your search." : "No chats yet — start one!"
+    }</div>`;
     return;
   }
   chatListEl.innerHTML = "";
-  chats.forEach((c) => {
+  ordered.forEach((c) => {
     const item = document.createElement("div");
     item.className = "chat-list-item";
     item.dataset.chatId = c.id;
+
+    const pinBtn = document.createElement("button");
+    pinBtn.type = "button";
+    pinBtn.className = "chat-list-item-pin" + (c.pinned ? " pinned" : "");
+    pinBtn.title = c.pinned ? "Unpin chat" : "Pin chat";
+    pinBtn.innerHTML =
+      '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2c-1.1 0-2 .9-2 2v6.28L7.34 13H7v2h4v6l1 1 1-1v-6h4v-2h-.34L14 10.28V4c0-1.1-.9-2-2-2z"/></svg>';
+    pinBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      togglePinChat(c.id, !c.pinned);
+    });
 
     const title = document.createElement("span");
     title.className = "chat-list-item-title";
@@ -463,12 +503,22 @@ function renderChatList(chats) {
       handleDeleteChat(c.id);
     });
 
+    item.appendChild(pinBtn);
     item.appendChild(title);
     item.appendChild(del);
     item.addEventListener("click", () => selectChat(c.id));
     chatListEl.appendChild(item);
   });
   highlightActiveChat();
+}
+
+async function togglePinChat(chatId, pinned) {
+  if (!currentUser) return;
+  try {
+    await updateDoc(doc(db, "users", currentUser.uid, "chats", chatId), { pinned });
+  } catch (err) {
+    console.error("Failed to pin/unpin chat:", err);
+  }
 }
 
 function watchChatList(uid) {
@@ -562,9 +612,128 @@ async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage,
   await updateDoc(chatRef, update);
 }
 
-function addMessage(container, message, sender, attachment) {
+// ==========================================
+// Punch AI - Rich text rendering (markdown + code highlighting)
+// ==========================================
+
+// Renders raw AI text as sanitized markdown with syntax-highlighted code
+// blocks, and adds a small "Copy" button to each code block.
+function renderRichText(el, rawText) {
+  if (window.marked && window.DOMPurify) {
+    const html = marked.parse(rawText, { breaks: true });
+    el.innerHTML = DOMPurify.sanitize(html);
+  } else {
+    // Libraries failed to load (e.g. offline) — fall back to plain text
+    // instead of leaving the message blank.
+    el.textContent = rawText;
+    return;
+  }
+  if (window.hljs) {
+    el.querySelectorAll("pre code").forEach((block) => {
+      hljs.highlightElement(block);
+      const pre = block.parentElement;
+      if (pre.querySelector(".code-copy-btn")) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "code-copy-btn";
+      btn.textContent = "Copy";
+      btn.addEventListener("click", () => {
+        navigator.clipboard.writeText(block.textContent).then(() => {
+          btn.textContent = "Copied!";
+          setTimeout(() => (btn.textContent = "Copy"), 1400);
+        });
+      });
+      pre.style.position = "relative";
+      pre.appendChild(btn);
+    });
+  }
+}
+
+// ==========================================
+// Punch AI - Message action toolbar (copy / regenerate / edit / read aloud)
+// ==========================================
+
+let speakingBtn = null; // the currently-active read-aloud button, if any
+
+function stopSpeaking() {
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  if (speakingBtn) {
+    speakingBtn.classList.remove("speaking");
+    speakingBtn.title = "Read aloud";
+    speakingBtn = null;
+  }
+}
+
+function toggleReadAloud(btn, text) {
+  if (!("speechSynthesis" in window)) return;
+  if (speakingBtn === btn) {
+    stopSpeaking();
+    return;
+  }
+  stopSpeaking();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.onend = () => stopSpeaking();
+  utterance.onerror = () => stopSpeaking();
+  speakingBtn = btn;
+  btn.classList.add("speaking");
+  btn.title = "Stop reading";
+  speechSynthesis.speak(utterance);
+}
+
+function iconBtn(className, title, svgPath) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `msg-action-btn ${className}`;
+  btn.title = title;
+  btn.innerHTML = svgPath;
+  return btn;
+}
+
+const ICON_COPY =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const ICON_REGENERATE =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
+const ICON_EDIT =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+const ICON_SPEAK =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
+
+function buildMessageToolbar(sender, rawText, historyIndex) {
+  const bar = document.createElement("div");
+  bar.className = "msg-actions";
+
+  const copyBtn = iconBtn("copy", "Copy", ICON_COPY);
+  copyBtn.addEventListener("click", () => {
+    navigator.clipboard.writeText(rawText).then(() => {
+      copyBtn.title = "Copied!";
+      setTimeout(() => (copyBtn.title = "Copy"), 1400);
+    });
+  });
+  bar.appendChild(copyBtn);
+
+  if (sender === "assistant") {
+    const speakBtn = iconBtn("speak", "Read aloud", ICON_SPEAK);
+    speakBtn.addEventListener("click", () => toggleReadAloud(speakBtn, rawText));
+    bar.appendChild(speakBtn);
+
+    if (historyIndex != null) {
+      const regenBtn = iconBtn("regenerate", "Regenerate", ICON_REGENERATE);
+      regenBtn.addEventListener("click", () => regenerateMessage(historyIndex));
+      bar.appendChild(regenBtn);
+    }
+  } else if (sender === "user" && historyIndex != null) {
+    const editBtn = iconBtn("edit", "Edit & resend", ICON_EDIT);
+    editBtn.addEventListener("click", (e) => startEditMessage(e.target.closest(".msg"), historyIndex, rawText));
+    bar.appendChild(editBtn);
+  }
+
+  return bar;
+}
+
+function addMessage(container, message, sender, attachment, historyIndex) {
   const div = document.createElement("div");
   div.className = `msg ${sender}`;
+  if (historyIndex != null) div.dataset.historyIndex = String(historyIndex);
 
   if (attachment && (attachment.url || attachment.name)) {
     if ((attachment.type === "image" || attachment.isImage) && attachment.url) {
@@ -583,8 +752,17 @@ function addMessage(container, message, sender, attachment) {
 
   if (message) {
     const textNode = document.createElement("div");
-    textNode.textContent = message;
+    textNode.className = "msg-text";
+    if (sender === "assistant") {
+      renderRichText(textNode, message);
+    } else {
+      textNode.textContent = message;
+    }
     div.appendChild(textNode);
+  }
+
+  if (sender === "assistant" || sender === "user") {
+    div.appendChild(buildMessageToolbar(sender, message, historyIndex));
   }
 
   container.appendChild(div);
@@ -592,13 +770,112 @@ function addMessage(container, message, sender, attachment) {
   return div;
 }
 
+// Removes every rendered message whose history index is >= fromIndex —
+// used by regenerate/edit to drop the stale tail before resending.
+function removeMessagesFromIndex(fromIndex) {
+  chatWindow.querySelectorAll("[data-history-index]").forEach((el) => {
+    if (Number(el.dataset.historyIndex) >= fromIndex) el.remove();
+  });
+}
+
+function startEditMessage(msgEl, historyIndex, rawText) {
+  if (!msgEl || msgEl.querySelector(".msg-edit-area")) return;
+  const textEl = msgEl.querySelector(".msg-text");
+  if (!textEl) return;
+
+  const original = textEl.textContent;
+  textEl.classList.add("hidden");
+
+  const wrap = document.createElement("div");
+  wrap.className = "msg-edit-area";
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "msg-edit-textarea";
+  textarea.value = original;
+
+  const actions = document.createElement("div");
+  actions.className = "msg-edit-actions";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "msg-edit-save";
+  saveBtn.textContent = "Save & resend";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "msg-edit-cancel";
+  cancelBtn.textContent = "Cancel";
+
+  actions.appendChild(saveBtn);
+  actions.appendChild(cancelBtn);
+  wrap.appendChild(textarea);
+  wrap.appendChild(actions);
+  msgEl.insertBefore(wrap, msgEl.querySelector(".msg-actions"));
+  textarea.focus();
+
+  cancelBtn.addEventListener("click", () => {
+    wrap.remove();
+    textEl.classList.remove("hidden");
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const newText = textarea.value.trim();
+    if (!newText) return;
+    wrap.remove();
+    editAndResend(historyIndex, newText);
+  });
+}
+
+async function editAndResend(historyIndex, newText) {
+  hideClarifyCard();
+  const keepCount = historyIndex;
+  chatHistory = chatHistory.slice(0, keepCount);
+  removeMessagesFromIndex(historyIndex);
+  if (currentUser && currentChatId) {
+    truncateFirestoreMessages(currentUser.uid, currentChatId, keepCount).catch((err) =>
+      console.error("Failed to truncate saved chat:", err),
+    );
+  }
+  await sendChatMessage(newText, null);
+}
+
+async function regenerateMessage(assistantIndex) {
+  if (assistantIndex < 1) return;
+  const userTurn = chatHistory[assistantIndex - 1];
+  if (!userTurn || userTurn.role !== "user") return;
+  const messageText = userTurn.parts[0].text;
+
+  hideClarifyCard();
+  const keepCount = assistantIndex - 1;
+  chatHistory = chatHistory.slice(0, keepCount);
+  removeMessagesFromIndex(keepCount);
+  if (currentUser && currentChatId) {
+    truncateFirestoreMessages(currentUser.uid, currentChatId, keepCount).catch((err) =>
+      console.error("Failed to truncate saved chat:", err),
+    );
+  }
+  await sendChatMessage(messageText, null);
+}
+
+// Deletes every saved message doc past `keepCount` turns, so Firestore
+// stays in sync after a regenerate or edit truncates the local history.
+async function truncateFirestoreMessages(uid, chatId, keepCount) {
+  const q = query(messagesCol(uid, chatId), orderBy("createdAt", "asc"));
+  const snap = await getDocs(q);
+  const toDelete = snap.docs.slice(keepCount);
+  await Promise.all(toDelete.map((d) => deleteDoc(d.ref)));
+}
+
 // Types the assistant's reply out word-by-word instead of dumping it
-// instantly, matching how the chat product should feel.
-function typeMessage(container, fullText, speedMs = 18) {
+// instantly, matching how the chat product should feel. Renders as
+// sanitized markdown once the full text has streamed in.
+function typeMessage(container, fullText, historyIndex, speedMs = 18) {
   const div = document.createElement("div");
   div.className = "msg assistant";
+  if (historyIndex != null) div.dataset.historyIndex = String(historyIndex);
+  const textNode = document.createElement("div");
+  textNode.className = "msg-text";
   const cursor = document.createElement("span");
   cursor.className = "typing-cursor";
+  div.appendChild(textNode);
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
 
@@ -606,7 +883,7 @@ function typeMessage(container, fullText, speedMs = 18) {
   let i = 0;
 
   return new Promise((resolve) => {
-    div.appendChild(cursor);
+    textNode.appendChild(cursor);
 
     function step() {
       if (i < words.length) {
@@ -617,6 +894,9 @@ function typeMessage(container, fullText, speedMs = 18) {
         setTimeout(step, speedMs);
       } else {
         cursor.remove();
+        renderRichText(textNode, fullText);
+        div.appendChild(buildMessageToolbar("assistant", fullText, historyIndex));
+        container.scrollTop = container.scrollHeight;
         resolve(div);
       }
     }
@@ -625,6 +905,7 @@ function typeMessage(container, fullText, speedMs = 18) {
 }
 
 async function sendChatMessage(message, attachment) {
+  hideClarifyCard();
   chatInput.disabled = true;
   chatAttachBtn.disabled = true;
   const isFirstMessage = chatHistory.length === 0;
@@ -633,7 +914,14 @@ async function sendChatMessage(message, attachment) {
   // local preview URL immediately so the user's bubble shows the image
   // right away instead of waiting on any network round trip.
   let displayUrl = attachment ? attachment.localPreviewUrl : null;
-  addMessage(chatWindow, message, "user", attachment ? { url: displayUrl, isImage: attachment.isImage, name: attachment.name } : null);
+  const userIndex = chatHistory.length;
+  addMessage(
+    chatWindow,
+    message,
+    "user",
+    attachment ? { url: displayUrl, isImage: attachment.isImage, name: attachment.name } : null,
+    userIndex,
+  );
 
   try {
     let attachmentPayload = null;
@@ -675,17 +963,27 @@ async function sendChatMessage(message, attachment) {
       ? `${message}${message ? "\n\n" : ""}[Attached: ${attachment.name}]`
       : message;
 
-    chatHistory.push({
-      role: "user",
-      parts: [{ text: historyText }],
-    });
+    chatHistory.push({ role: "user", parts: [{ text: historyText }] });
 
-    chatHistory.push({
-      role: "model",
-      parts: [{ text: data.reply }],
-    });
+    if (data.clarify) {
+      // The AI wants more detail before answering — save its question as
+      // the "reply" for this turn so context/history stay consistent, then
+      // show the floating clarify card instead of a normal typed answer.
+      chatHistory.push({ role: "model", parts: [{ text: data.question }] });
+      showClarifyCard(data.question, data.options || []);
 
-    await typeMessage(chatWindow, data.reply);
+      if (currentUser && currentChatId) {
+        saveMessagePair(currentUser.uid, currentChatId, message, data.question, isFirstMessage, null).catch(
+          (err) => console.error("Failed to save chat:", err),
+        );
+      }
+      return;
+    }
+
+    chatHistory.push({ role: "model", parts: [{ text: data.reply }] });
+
+    const assistantIndex = userIndex + 1;
+    await typeMessage(chatWindow, data.reply, assistantIndex);
 
     if (currentUser && currentChatId) {
       (async () => {
@@ -719,10 +1017,39 @@ async function sendChatMessage(message, attachment) {
   }
 }
 
+// ==========================================
+// Punch AI - Clarifying question card
+// ==========================================
+const clarifyCard = document.getElementById("clarify-card");
+const clarifyQuestionEl = document.getElementById("clarify-question");
+const clarifyOptionsEl = document.getElementById("clarify-options");
+
+function showClarifyCard(question, options) {
+  clarifyQuestionEl.textContent = question;
+  clarifyOptionsEl.innerHTML = "";
+  options.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "clarify-option-btn";
+    btn.textContent = opt;
+    btn.addEventListener("click", () => {
+      hideClarifyCard();
+      sendChatMessage(opt, null);
+    });
+    clarifyOptionsEl.appendChild(btn);
+  });
+  clarifyCard.classList.remove("hidden");
+}
+
+function hideClarifyCard() {
+  clarifyCard.classList.add("hidden");
+}
+
 const newChatBtn = document.getElementById("new-chat-btn");
 if (newChatBtn) {
   newChatBtn.addEventListener("click", () => {
     clearPendingAttachment();
+    hideClarifyCard();
     createNewChat();
   });
 }
@@ -1033,6 +1360,9 @@ onAuthStateChanged(auth, (user) => {
     currentUser = null;
     currentChatId = null;
     chatHistory = [];
+    allChatsCache = [];
+    chatSearchTerm = "";
+    if (chatSearchInput) chatSearchInput.value = "";
     if (unsubscribeChatList) {
       unsubscribeChatList();
       unsubscribeChatList = null;
@@ -1041,6 +1371,8 @@ onAuthStateChanged(auth, (user) => {
     chatListEl.innerHTML = '<div class="chat-list-empty">Log in to see your saved chats</div>';
     clearProfileUI();
     closeCustomize();
+    stopSpeaking();
+    hideClarifyCard();
 
     console.log("User not logged in");
   }
