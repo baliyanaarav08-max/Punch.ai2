@@ -1136,11 +1136,13 @@ a { color: inherit; text-decoration: none; }
   color: var(--violet-bright);
 }
 
-/* Pending-attachment preview chip, shown above the input row before send */
+/* Pending-attachment preview row — holds one chip per queued file, shown
+   above the input row before send. Supports multiple attachments at once. */
 .chat-attach-preview {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 10px 16px;
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
@@ -1148,16 +1150,26 @@ a { color: inherit; text-decoration: none; }
   color: var(--text-dim);
 }
 .chat-attach-preview.hidden { display: none; }
+
+.chat-attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 5px 8px;
+  max-width: 220px;
+}
 .chat-attach-thumb {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
   object-fit: cover;
   border: 1px solid var(--border);
+  flex-shrink: 0;
 }
-.chat-attach-thumb.hidden { display: none; }
 .chat-attach-name {
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1166,16 +1178,49 @@ a { color: inherit; text-decoration: none; }
   background: none;
   border: none;
   color: var(--text-dim);
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 2px 5px;
   border-radius: 6px;
+  flex-shrink: 0;
 }
 .chat-attach-remove:hover {
   color: #f87171;
   background: rgba(239, 68, 68, 0.12);
 }
+
+/* ---------- Tone / personality picker (Customize modal) ---------- */
+.tone-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tone-option {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+.tone-option:hover {
+  border-color: var(--violet-dim);
+  color: var(--text);
+}
+.tone-option.selected {
+  background: linear-gradient(135deg, var(--violet), var(--violet-dim));
+  border-color: var(--violet);
+  color: #fff;
+}
+
+/* ---------- Message reactions (thumbs up/down) ---------- */
+.msg-action-btn.reaction.active.up { color: #4ade80; }
+.msg-action-btn.reaction.active.down { color: #f87171; }
 
 /* Image / file attachments rendered inside a sent message bubble */
 .msg-attachment-img {

@@ -44,67 +44,122 @@ const chatInput = document.getElementById("chat-input");
 const chatAttachInput = document.getElementById("chat-attach-input");
 const chatAttachBtn = document.getElementById("chat-attach-btn");
 const chatAttachPreview = document.getElementById("chat-attach-preview");
-const chatAttachThumb = document.getElementById("chat-attach-thumb");
-const chatAttachName = document.getElementById("chat-attach-name");
-const chatAttachRemove = document.getElementById("chat-attach-remove");
 
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB, matches the server-side cap
-let pendingAttachment = null; // { file, isImage, mimeType, name, localPreviewUrl }
+const MAX_ATTACHMENTS_PER_MESSAGE = 4;
+let pendingAttachments = []; // [{ file, isImage, mimeType, name, localPreviewUrl }, ...]
 
+// Kept as a getter-style alias so any older single-attachment call site
+// (there are none left, but future code may assume one) still degrades
+// gracefully to "the first queued file".
 function clearPendingAttachment() {
-  if (pendingAttachment && pendingAttachment.localPreviewUrl) {
-    URL.revokeObjectURL(pendingAttachment.localPreviewUrl);
+  pendingAttachments.forEach((a) => {
+    if (a.localPreviewUrl) URL.revokeObjectURL(a.localPreviewUrl);
+  });
+  pendingAttachments = [];
+  renderAttachPreview();
+}
+
+function renderAttachPreview() {
+  chatAttachPreview.innerHTML = "";
+  if (pendingAttachments.length === 0) {
+    chatAttachPreview.classList.add("hidden");
+    chatAttachBtn.classList.remove("has-attachment");
+    return;
   }
-  pendingAttachment = null;
-  chatAttachPreview.classList.add("hidden");
-  chatAttachThumb.classList.add("hidden");
-  chatAttachThumb.src = "";
-  chatAttachName.textContent = "";
-  chatAttachBtn.classList.remove("has-attachment");
+  pendingAttachments.forEach((att, idx) => {
+    const chip = document.createElement("div");
+    chip.className = "chat-attach-chip";
+
+    if (att.isImage && att.localPreviewUrl) {
+      const thumb = document.createElement("img");
+      thumb.className = "chat-attach-thumb";
+      thumb.src = att.localPreviewUrl;
+      thumb.alt = "";
+      chip.appendChild(thumb);
+    }
+
+    const name = document.createElement("span");
+    name.className = "chat-attach-name";
+    name.textContent = att.name;
+    chip.appendChild(name);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chat-attach-remove";
+    remove.setAttribute("aria-label", "Remove attachment");
+    remove.textContent = "\u00d7";
+    remove.addEventListener("click", () => {
+      if (att.localPreviewUrl) URL.revokeObjectURL(att.localPreviewUrl);
+      pendingAttachments.splice(idx, 1);
+      renderAttachPreview();
+    });
+    chip.appendChild(remove);
+
+    chatAttachPreview.appendChild(chip);
+  });
+  chatAttachPreview.classList.remove("hidden");
+  chatAttachBtn.classList.add("has-attachment");
 }
 
 chatAttachBtn.addEventListener("click", () => {
   chatAttachInput.click();
 });
 
-// Shared by both the file picker and drag-and-drop, so a dropped file goes
-// through the exact same size check / preview / pendingAttachment setup.
-function handleSelectedFile(file) {
-  if (!file) return;
+// Shared by the file picker, drag-and-drop, and clipboard paste, so every
+// entry point goes through the same size check / preview / queue setup.
+// Accepts a single File (drag-drop) or a FileList/array (picker, paste).
+function handleSelectedFile(fileOrFiles) {
+  const files = fileOrFiles
+    ? fileOrFiles instanceof FileList
+      ? Array.from(fileOrFiles)
+      : Array.isArray(fileOrFiles)
+        ? fileOrFiles
+        : [fileOrFiles]
+    : [];
+  if (files.length === 0) return;
 
-  if (file.size > MAX_ATTACHMENT_BYTES) {
-    alert("That file is too large — please use something under 5 MB.");
-    return;
+  for (const file of files) {
+    if (pendingAttachments.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+      alert(`You can attach up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message.`);
+      break;
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      alert(`"${file.name}" is too large — please use something under 5 MB.`);
+      continue;
+    }
+    const isImage = file.type.startsWith("image/");
+    pendingAttachments.push({
+      file,
+      isImage,
+      mimeType: file.type || "application/octet-stream",
+      name: file.name,
+      localPreviewUrl: isImage ? URL.createObjectURL(file) : null,
+    });
   }
-
-  const isImage = file.type.startsWith("image/");
-  clearPendingAttachment();
-  pendingAttachment = {
-    file,
-    isImage,
-    mimeType: file.type || "application/octet-stream",
-    name: file.name,
-    localPreviewUrl: isImage ? URL.createObjectURL(file) : null,
-  };
-
-  chatAttachName.textContent = file.name;
-  if (isImage) {
-    chatAttachThumb.src = pendingAttachment.localPreviewUrl;
-    chatAttachThumb.classList.remove("hidden");
-  } else {
-    chatAttachThumb.classList.add("hidden");
-  }
-  chatAttachPreview.classList.remove("hidden");
-  chatAttachBtn.classList.add("has-attachment");
+  renderAttachPreview();
 }
 
 chatAttachInput.addEventListener("change", () => {
-  const file = chatAttachInput.files[0];
+  handleSelectedFile(chatAttachInput.files);
   chatAttachInput.value = "";
-  handleSelectedFile(file);
 });
 
-chatAttachRemove.addEventListener("click", clearPendingAttachment);
+// ---- Paste-to-attach: Ctrl/Cmd+V an image straight from the clipboard ----
+chatInput.addEventListener("paste", (e) => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  const files = [];
+  for (const item of items) {
+    if (item.kind === "file") {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (files.length > 0) {
+    handleSelectedFile(files);
+  }
+});
 
 // ==========================================
 // Punch AI - Drag & Drop
@@ -147,10 +202,10 @@ window.addEventListener("drop", (e) => {
   e.preventDefault();
   hideDropOverlay();
 
-  const file = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (!file) return;
+  const files = e.dataTransfer.files;
+  if (!files || files.length === 0) return;
 
-  handleSelectedFile(file);
+  handleSelectedFile(files);
 
   // Bring the dropped file into view in the chat card and focus the
   // input so the person can just start typing their prompt about it.
@@ -200,6 +255,29 @@ const customizeWant = document.getElementById("customize-want");
 const customizeGoal = document.getElementById("customize-goal");
 const customizeAbout = document.getElementById("customize-about");
 const customizeNote = document.getElementById("customize-note");
+const customizeToneWrap = document.getElementById("customize-tone");
+
+const DEFAULT_TONE = "friendly";
+let selectedTone = DEFAULT_TONE;
+
+if (customizeToneWrap) {
+  customizeToneWrap.querySelectorAll(".tone-option").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedTone = btn.dataset.tone;
+      customizeToneWrap
+        .querySelectorAll(".tone-option")
+        .forEach((b) => b.classList.toggle("selected", b === btn));
+    });
+  });
+}
+
+function applyToneSelection(tone) {
+  selectedTone = tone || DEFAULT_TONE;
+  if (!customizeToneWrap) return;
+  customizeToneWrap.querySelectorAll(".tone-option").forEach((b) => {
+    b.classList.toggle("selected", b.dataset.tone === selectedTone);
+  });
+}
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // 5 MB
 let pendingPhotoURL = ""; // holds the uploaded download URL until Save is pressed
@@ -227,6 +305,7 @@ function fillCustomizeForm() {
   customizeWant.value = userProfile.wantToBecome || "";
   customizeGoal.value = userProfile.goal || "";
   customizeAbout.value = userProfile.about || "";
+  applyToneSelection(userProfile.tone || DEFAULT_TONE);
   customizePhotoStatus.textContent = "";
   customizePhotoStatus.className = "upload-status";
   applyAvatar(pendingPhotoURL);
@@ -249,6 +328,7 @@ function clearProfileUI() {
   userProfile = {};
   profileCorner.classList.add("hidden");
   applyAvatar("");
+  applyToneSelection(DEFAULT_TONE);
 }
 
 function openCustomize() {
@@ -337,6 +417,7 @@ customizeForm.addEventListener("submit", async (e) => {
     wantToBecome: customizeWant.value.trim(),
     goal: customizeGoal.value.trim(),
     about: customizeAbout.value.trim(),
+    tone: selectedTone,
     updatedAt: serverTimestamp(),
   };
 
@@ -360,8 +441,8 @@ customizeForm.addEventListener("submit", async (e) => {
 // the first place — no email/password — but keep this explicit and small).
 function profileForApi() {
   if (!userProfile) return null;
-  const { name, hobby, wantToBecome, goal, about } = userProfile;
-  return { name, hobby, wantToBecome, goal, about };
+  const { name, hobby, wantToBecome, goal, about, tone } = userProfile;
+  return { name, hobby, wantToBecome, goal, about, tone: tone || DEFAULT_TONE };
 }
 
 // ==========================================
@@ -413,12 +494,20 @@ async function loadChatMessages(uid, chatId) {
   snap.forEach((docSnap) => {
     const m = docSnap.data();
     chatHistory.push({ role: m.role, parts: [{ text: m.text }] });
+    // Newer messages store a full "attachments" list; older ones only have
+    // the single attachmentURL/Type/Name fields — support both.
+    const attachments =
+      Array.isArray(m.attachments) && m.attachments.length > 0
+        ? m.attachments.map((a) => ({ url: a.url, type: a.type, name: a.name }))
+        : m.attachmentURL
+          ? [{ url: m.attachmentURL, type: m.attachmentType, name: m.attachmentName }]
+          : [];
     displayMessages.push({
       sender: m.role === "model" ? "assistant" : "user",
       text: m.text,
-      attachmentURL: m.attachmentURL || null,
-      attachmentType: m.attachmentType || null,
-      attachmentName: m.attachmentName || null,
+      attachments,
+      reaction: m.reaction || null,
+      docId: docSnap.id,
     });
   });
 
@@ -427,11 +516,11 @@ async function loadChatMessages(uid, chatId) {
     addMessage(chatWindow, DEFAULT_GREETING, "assistant");
   } else {
     displayMessages.forEach((m, idx) => {
-      addMessage(chatWindow, m.text, m.sender, {
-        url: m.attachmentURL,
-        type: m.attachmentType,
-        name: m.attachmentName,
-      }, idx);
+      const div = addMessage(chatWindow, m.text, m.sender, m.attachments, idx);
+      if (m.sender === "assistant") {
+        div.dataset.msgDocId = m.docId;
+        if (m.reaction) applyReactionUI(div, m.reaction);
+      }
     });
   }
 }
@@ -584,19 +673,27 @@ async function handleDeleteChat(chatId) {
   }
 }
 
-async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage, attachmentInfo) {
+async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage, attachmentInfos) {
+  const list = Array.isArray(attachmentInfos) ? attachmentInfos.filter((a) => a && a.url) : [];
   const userDoc = {
     role: "user",
     text: userText,
     createdAt: serverTimestamp(),
   };
-  if (attachmentInfo && attachmentInfo.url) {
-    userDoc.attachmentURL = attachmentInfo.url;
-    userDoc.attachmentType = attachmentInfo.isImage ? "image" : "file";
-    userDoc.attachmentName = attachmentInfo.name;
+  if (list.length > 0) {
+    // Keep the old single-attachment fields for backward compatibility with
+    // any existing reads, plus a full list for multi-attachment messages.
+    userDoc.attachmentURL = list[0].url;
+    userDoc.attachmentType = list[0].isImage ? "image" : "file";
+    userDoc.attachmentName = list[0].name;
+    userDoc.attachments = list.map((a) => ({
+      url: a.url,
+      type: a.isImage ? "image" : "file",
+      name: a.name,
+    }));
   }
   await addDoc(messagesCol(uid, chatId), userDoc);
-  await addDoc(messagesCol(uid, chatId), {
+  const modelDocRef = await addDoc(messagesCol(uid, chatId), {
     role: "model",
     text: replyText,
     createdAt: serverTimestamp(),
@@ -606,10 +703,11 @@ async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage,
   const update = { updatedAt: serverTimestamp() };
   if (isFirstMessage) {
     // Auto-title the chat from the first user message, like ChatGPT does.
-    const titleSource = userText || (attachmentInfo ? attachmentInfo.name : "New Chat");
+    const titleSource = userText || (list[0] ? list[0].name : "New Chat");
     update.title = titleSource.length > 42 ? titleSource.slice(0, 42) + "…" : titleSource;
   }
   await updateDoc(chatRef, update);
+  return modelDocRef.id; // so the caller can attach it to the rendered bubble for reactions
 }
 
 // ==========================================
@@ -697,6 +795,41 @@ const ICON_EDIT =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
 const ICON_SPEAK =
   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>';
+const ICON_THUMBS_UP =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>';
+const ICON_THUMBS_DOWN =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/><path d="M17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>';
+
+// Applies the visual "pressed" state for a stored/selected reaction to a
+// rendered assistant message bubble's toolbar. `reaction` is "up", "down",
+// or null/undefined to clear both.
+function applyReactionUI(msgDiv, reaction) {
+  const upBtn = msgDiv.querySelector(".msg-action-btn.reaction.up");
+  const downBtn = msgDiv.querySelector(".msg-action-btn.reaction.down");
+  if (upBtn) upBtn.classList.toggle("active", reaction === "up");
+  if (downBtn) downBtn.classList.toggle("active", reaction === "down");
+}
+
+// Persists a thumbs up/down on an assistant message. Clicking an already-
+// active reaction clears it. Silently a no-op if the message was never
+// saved to Firestore (e.g. logged-out session) — the UI still updates.
+async function setMessageReaction(msgDiv, historyIndex, reaction) {
+  const current = msgDiv.dataset.reaction || null;
+  const next = current === reaction ? null : reaction;
+  msgDiv.dataset.reaction = next || "";
+  applyReactionUI(msgDiv, next);
+
+  const docId = msgDiv.dataset.msgDocId;
+  if (currentUser && currentChatId && docId) {
+    try {
+      await updateDoc(doc(db, "users", currentUser.uid, "chats", currentChatId, "messages", docId), {
+        reaction: next,
+      });
+    } catch (err) {
+      console.error("Failed to save reaction:", err);
+    }
+  }
+}
 
 function buildMessageToolbar(sender, rawText, historyIndex) {
   const bar = document.createElement("div");
@@ -715,6 +848,13 @@ function buildMessageToolbar(sender, rawText, historyIndex) {
     const speakBtn = iconBtn("speak", "Read aloud", ICON_SPEAK);
     speakBtn.addEventListener("click", () => toggleReadAloud(speakBtn, rawText));
     bar.appendChild(speakBtn);
+
+    const upBtn = iconBtn("reaction up", "Good response", ICON_THUMBS_UP);
+    const downBtn = iconBtn("reaction down", "Bad response", ICON_THUMBS_DOWN);
+    upBtn.addEventListener("click", () => setMessageReaction(bar.closest(".msg"), historyIndex, "up"));
+    downBtn.addEventListener("click", () => setMessageReaction(bar.closest(".msg"), historyIndex, "down"));
+    bar.appendChild(upBtn);
+    bar.appendChild(downBtn);
 
     if (historyIndex != null) {
       const regenBtn = iconBtn("regenerate", "Regenerate", ICON_REGENERATE);
@@ -735,20 +875,25 @@ function addMessage(container, message, sender, attachment, historyIndex) {
   div.className = `msg ${sender}`;
   if (historyIndex != null) div.dataset.historyIndex = String(historyIndex);
 
-  if (attachment && (attachment.url || attachment.name)) {
-    if ((attachment.type === "image" || attachment.isImage) && attachment.url) {
+  // Accept a single attachment object (older call sites) or a list of them
+  // (multi-attachment messages) — normalize to a list either way.
+  const attachmentList = !attachment ? [] : Array.isArray(attachment) ? attachment : [attachment];
+
+  attachmentList.forEach((att) => {
+    if (!att || (!att.url && !att.name)) return;
+    if ((att.type === "image" || att.isImage) && att.url) {
       const img = document.createElement("img");
       img.className = "msg-attachment-img";
-      img.src = attachment.url;
-      img.alt = attachment.name || "Attached image";
+      img.src = att.url;
+      img.alt = att.name || "Attached image";
       div.appendChild(img);
-    } else if (attachment.name) {
+    } else if (att.name) {
       const chip = document.createElement("div");
       chip.className = "msg-attachment-file";
-      chip.textContent = `📎 ${attachment.name}`;
+      chip.textContent = `📎 ${att.name}`;
       div.appendChild(chip);
     }
-  }
+  });
 
   if (message) {
     const textNode = document.createElement("div");
@@ -952,41 +1097,46 @@ const CHAT_STATUS_PHRASES = [
   "Almost done...",
 ];
 
-async function sendChatMessage(message, attachment) {
+async function sendChatMessage(message, attachmentOrList) {
   hideClarifyCard();
   chatInput.disabled = true;
   chatAttachBtn.disabled = true;
   const isFirstMessage = chatHistory.length === 0;
 
-  // Snapshot the attachment before clearing the input area, and build a
-  // local preview URL immediately so the user's bubble shows the image
-  // right away instead of waiting on any network round trip.
-  let displayUrl = attachment ? attachment.localPreviewUrl : null;
+  // Accept either a single attachment object (older call sites, e.g. the
+  // clarify-card options) or an array of them (multi-attachment send).
+  const attachments = !attachmentOrList
+    ? []
+    : Array.isArray(attachmentOrList)
+      ? attachmentOrList
+      : [attachmentOrList];
+
   const userIndex = chatHistory.length;
+  // The bubble shows every attached file; only the first gets an inline
+  // image preview to keep the bubble compact, the rest render as chips.
   addMessage(
     chatWindow,
     message,
     "user",
-    attachment ? { url: displayUrl, isImage: attachment.isImage, name: attachment.name } : null,
+    attachments.length > 0
+      ? attachments.map((a) => ({ url: a.localPreviewUrl, isImage: a.isImage, name: a.name }))
+      : null,
     userIndex,
   );
 
   const statusHandle = showStatusIndicator(chatWindow, CHAT_STATUS_PHRASES);
 
   try {
-    let attachmentPayload = null;
-    let base64Data = null;
-
-    if (attachment) {
-      if (attachment.isImage) {
-        base64Data = await fileToBase64(attachment.file);
-      }
-      attachmentPayload = {
-        mimeType: attachment.mimeType,
-        name: attachment.name,
-        data: base64Data, // only present for images — backend ignores it otherwise
-      };
-    }
+    // Only images are sent inline as base64 (for vision); other file types
+    // are sent as name/mimeType only, matching the previous single-file
+    // behavior — the backend doesn't parse non-image bytes today.
+    const attachmentPayloads = await Promise.all(
+      attachments.map(async (att) => ({
+        mimeType: att.mimeType,
+        name: att.name,
+        data: att.isImage ? await fileToBase64(att.file) : null,
+      })),
+    );
 
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -997,7 +1147,8 @@ async function sendChatMessage(message, attachment) {
         message,
         history: chatHistory,
         profile: profileForApi(),
-        attachment: attachmentPayload,
+        attachment: attachmentPayloads[0] || null, // back-compat single field
+        attachments: attachmentPayloads,
       }),
     });
 
@@ -1007,10 +1158,12 @@ async function sendChatMessage(message, attachment) {
       throw new Error(data.error || "Server Error");
     }
 
-    // Keep the API-facing history text-only — the image is only needed for
-    // the turn it was sent on, not replayed into every future request.
-    const historyText = attachment
-      ? `${message}${message ? "\n\n" : ""}[Attached: ${attachment.name}]`
+    // Keep the API-facing history text-only — attached files are only
+    // needed for the turn they were sent on, not replayed into future
+    // requests.
+    const attachmentNames = attachments.map((a) => a.name).join(", ");
+    const historyText = attachments.length
+      ? `${message}${message ? "\n\n" : ""}[Attached: ${attachmentNames}]`
       : message;
 
     chatHistory.push({ role: "user", parts: [{ text: historyText }] });
@@ -1035,20 +1188,30 @@ async function sendChatMessage(message, attachment) {
     chatHistory.push({ role: "model", parts: [{ text: data.reply }] });
 
     const assistantIndex = userIndex + 1;
-    await typeMessage(chatWindow, data.reply, assistantIndex);
+    const assistantDiv = await typeMessage(chatWindow, data.reply, assistantIndex);
 
     if (currentUser && currentChatId) {
       (async () => {
-        let attachmentInfo = null;
-        if (attachment) {
+        const attachmentInfos = [];
+        for (const att of attachments) {
           try {
-            const storedUrl = await uploadAttachmentToStorage(currentUser.uid, currentChatId, attachment.file);
-            attachmentInfo = { url: storedUrl, isImage: attachment.isImage, name: attachment.name };
+            const storedUrl = await uploadAttachmentToStorage(currentUser.uid, currentChatId, att.file);
+            attachmentInfos.push({ url: storedUrl, isImage: att.isImage, name: att.name });
           } catch (err) {
             console.error("Attachment upload to Storage failed:", err);
           }
         }
-        return saveMessagePair(currentUser.uid, currentChatId, message, data.reply, isFirstMessage, attachmentInfo);
+        const modelDocId = await saveMessagePair(
+          currentUser.uid,
+          currentChatId,
+          message,
+          data.reply,
+          isFirstMessage,
+          attachmentInfos,
+        );
+        // So the thumbs up/down buttons on this bubble can write straight
+        // to the right Firestore doc without a reload.
+        if (assistantDiv && modelDocId) assistantDiv.dataset.msgDocId = modelDocId;
       })().catch((err) => console.error("Failed to save chat:", err));
     }
   } catch (error) {
@@ -1060,13 +1223,10 @@ async function sendChatMessage(message, attachment) {
     chatInput.disabled = false;
     chatAttachBtn.disabled = false;
     chatInput.focus();
-    // Don't revoke displayUrl here — the bubble in chatWindow still uses it
-    // for this session; it'll be released naturally on page reload.
-    pendingAttachment = null;
-    chatAttachPreview.classList.add("hidden");
-    chatAttachThumb.classList.add("hidden");
-    chatAttachName.textContent = "";
-    chatAttachBtn.classList.remove("has-attachment");
+    // Don't revoke the local preview URLs here — the bubble in chatWindow
+    // still uses them for this session; they're released on page reload.
+    pendingAttachments = [];
+    renderAttachPreview();
   }
 }
 
@@ -1111,13 +1271,60 @@ chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
 
   const message = chatInput.value.trim();
-  const attachment = pendingAttachment;
+  const attachments = pendingAttachments;
 
-  if (message === "" && !attachment) return;
+  if (message === "" && attachments.length === 0) return;
 
   chatInput.value = "";
 
-  sendChatMessage(message, attachment);
+  sendChatMessage(message, attachments);
+});
+
+// ==========================================
+// Punch AI - Keyboard shortcuts
+// ==========================================
+// Cmd/Ctrl+K: new chat. "/" : focus the input (unless already typing
+// somewhere). Up arrow on an empty input: reopen the last user message
+// for editing, matching the ChatGPT-style shortcut people expect.
+document.addEventListener("keydown", (e) => {
+  const mod = e.metaKey || e.ctrlKey;
+  const target = e.target;
+  const isTyping =
+    target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+
+  if (mod && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    clearPendingAttachment();
+    hideClarifyCard();
+    createNewChat();
+    chatInput.focus();
+    return;
+  }
+
+  if (e.key === "/" && !isTyping) {
+    e.preventDefault();
+    chatInput.focus();
+    return;
+  }
+
+  if (e.key === "Escape" && document.activeElement === chatInput) {
+    chatInput.blur();
+    return;
+  }
+
+  if (e.key === "ArrowUp" && target === chatInput && chatInput.value === "") {
+    // Find the most recent user message still in the DOM and load it back
+    // into the input for a quick edit-and-resend.
+    const userBubbles = chatWindow.querySelectorAll(".msg.user[data-history-index]");
+    if (userBubbles.length === 0) return;
+    const lastBubble = userBubbles[userBubbles.length - 1];
+    const textEl = lastBubble.querySelector(".msg-text");
+    if (!textEl) return;
+    e.preventDefault();
+    chatInput.value = textEl.textContent || "";
+    chatInput.focus();
+    chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
+  }
 });
 
 // ==========================================

@@ -102,6 +102,35 @@ def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=F
         goal = (profile.get("goal") or "").strip()
         want_to_become = (profile.get("wantToBecome") or "").strip()
         about = (profile.get("about") or "").strip()
+        tone = (profile.get("tone") or "").strip().lower()
+
+        TONE_INSTRUCTIONS = {
+            "formal": (
+                "Speak formally and professionally: complete sentences, no slang, "
+                "minimal contractions, respectful and polished phrasing — like a "
+                "well-written business or academic response."
+            ),
+            "friendly": (
+                "Speak warmly and encouragingly, like a supportive friend who's glad "
+                "to help — approachable and positive, but still clear and useful."
+            ),
+            "casual": (
+                "Speak casually and conversationally: contractions, relaxed phrasing, "
+                "like texting a friend. Skip stiff or overly formal language."
+            ),
+            "witty": (
+                "Speak with a light, witty sense of humor — a bit playful, the "
+                "occasional joke or clever turn of phrase — without ever letting the "
+                "humor get in the way of actually answering the question."
+            ),
+            "concise": (
+                "Be as brief as possible: short sentences, no filler, no preamble or "
+                "restating the question, straight to the point. Expand only if the "
+                "user explicitly asks for more detail."
+            ),
+        }
+        if tone in TONE_INSTRUCTIONS:
+            base += "\n\n" + TONE_INSTRUCTIONS[tone]
 
         if any([name, hobby, goal, want_to_become, about]):
             lines = ["\n\nHere is what you know about the person you're talking to:"]
@@ -179,34 +208,48 @@ def build_tech_system_prompt(context_block):
     return base
 
 
-def build_user_parts(message, attachment):
+def build_user_parts(message, attachments):
     """Builds a Gemini-style 'parts' list for the user's turn.
 
-    If there's an image attachment, its base64 data is included inline so
-    Gemini's vision can see it. Non-image files (PDF, docx, txt, etc.) aren't
-    parsed — Gemini can't reliably read arbitrary file contents this way —
-    so they're only referenced by name in the text.
+    Accepts a list of attachments (0 or more). Image attachments have their
+    base64 data included inline so Gemini's vision can see each one.
+    Non-image files (PDF, docx, txt, etc.) aren't parsed — Gemini can't
+    reliably read arbitrary file contents this way — so they're only
+    referenced by name in the text.
     """
     text = message or "Please look at what I attached."
-    if attachment and (attachment.get("mimeType") or "").startswith("image/") and attachment.get("data"):
-        return [
-            {"text": text},
-            {"inlineData": {"mimeType": attachment["mimeType"], "data": attachment["data"]}},
-        ]
-    if attachment and attachment.get("name"):
-        return [{"text": f"{text}\n\n[The user also attached a file named '{attachment['name']}'.]"}]
-    return [{"text": text}]
+    attachments = attachments or []
+
+    parts = [{"text": text}]
+    file_names = []
+    for att in attachments:
+        if not att:
+            continue
+        if (att.get("mimeType") or "").startswith("image/") and att.get("data"):
+            parts.append({"inlineData": {"mimeType": att["mimeType"], "data": att["data"]}})
+        elif att.get("name"):
+            file_names.append(att["name"])
+
+    if file_names:
+        names_str = ", ".join(f"'{n}'" for n in file_names)
+        parts.append({"text": f"[The user also attached: {names_str}.]"})
+
+    return parts
 
 
-def build_fallback_text(message, attachment):
+def build_fallback_text(message, attachments):
     """Text-only version of the user's turn, used when the request falls back
-    to Groq/Cerebras — neither of which can see the attached image."""
+    to Groq/Cerebras — neither of which can see attached images."""
     text = message or "Please look at what I attached."
-    if attachment and attachment.get("name"):
-        kind = "image" if (attachment.get("mimeType") or "").startswith("image/") else "file"
+    attachments = attachments or []
+    names = [att["name"] for att in attachments if att and att.get("name")]
+    if names:
+        kinds = {"image" if (att.get("mimeType") or "").startswith("image/") else "file" for att in attachments if att}
+        kind_str = "/".join(sorted(kinds)) if kinds else "file"
+        names_str = ", ".join(f"'{n}'" for n in names)
         return (
-            f"{text}\n\n[The user attached an {kind} named '{attachment['name']}'. "
-            "You can't view it right now — let them know you can't see attachments "
+            f"{text}\n\n[The user attached {kind_str}(s): {names_str}. "
+            "You can't view them right now — let them know you can't see attachments "
             "in this fallback mode if it's relevant, and answer the rest of their "
             "message as best you can.]"
         )
@@ -397,21 +440,28 @@ def chat():
     message = (data.get("message") or "").strip()
     history = data.get("history") or []  # list of {role, parts:[{text}]}
     profile = data.get("profile") or None
-    attachment = data.get("attachment") or None
+    # "attachments" is the current multi-file field; "attachment" is kept as
+    # a fallback for any older client that only ever sends one.
+    attachments = data.get("attachments")
+    if attachments is None:
+        single = data.get("attachment") or None
+        attachments = [single] if single else []
+    attachments = [a for a in attachments if a]
 
-    if not message and not attachment:
+    if not message and not attachments:
         return jsonify({"error": "Empty message"}), 400
 
-    if attachment and attachment.get("data") and len(attachment["data"]) > MAX_ATTACHMENT_B64_CHARS:
-        return jsonify({"error": "That file is too large — please use something under ~5 MB."}), 413
+    for att in attachments:
+        if att.get("data") and len(att["data"]) > MAX_ATTACHMENT_B64_CHARS:
+            return jsonify({"error": "One of those files is too large — please use something under ~5 MB."}), 413
 
     context_block = web_search(message) if message and needs_search(message) else None
     system_prompt = build_system_prompt(
         voice_mode=False, context_block=context_block, profile=profile, allow_clarify=True
     )
 
-    user_parts = build_user_parts(message, attachment)
-    fallback_text = build_fallback_text(message, attachment)
+    user_parts = build_user_parts(message, attachments)
+    fallback_text = build_fallback_text(message, attachments)
 
     contents = (history + [{"role": "user", "parts": user_parts}])[-20:]
     contents_fallback = (history + [{"role": "user", "parts": [{"text": fallback_text}]}])[-20:]
