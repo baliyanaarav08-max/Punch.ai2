@@ -904,6 +904,54 @@ function typeMessage(container, fullText, historyIndex, speedMs = 18) {
   });
 }
 
+// ==========================================
+// Punch AI - "Working on it" status indicator
+// ==========================================
+// Drops a small shimmering status line into a chat window while a request
+// is in flight, cycling through a few varied phrases instead of a single
+// static "Loading..." — call .stop() the moment the real reply is ready
+// (or on error) to remove it. Safe to call .stop() more than once.
+function showStatusIndicator(container, phrases) {
+  const div = document.createElement("div");
+  div.className = "msg assistant status-msg";
+  const textSpan = document.createElement("span");
+  textSpan.className = "status-text";
+  textSpan.textContent = phrases[0];
+  div.appendChild(textSpan);
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+
+  let i = 0;
+  let stopped = false;
+  const timer = setInterval(() => {
+    textSpan.classList.add("status-fade");
+    setTimeout(() => {
+      if (stopped) return;
+      i = (i + 1) % phrases.length;
+      textSpan.textContent = phrases[i];
+      textSpan.classList.remove("status-fade");
+      container.scrollTop = container.scrollHeight;
+    }, 200);
+  }, 2000);
+
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+      div.remove();
+    },
+  };
+}
+
+const CHAT_STATUS_PHRASES = [
+  "Reading your message...",
+  "Thinking it through...",
+  "Working out the best answer...",
+  "Piecing the reply together...",
+  "Almost done...",
+];
+
 async function sendChatMessage(message, attachment) {
   hideClarifyCard();
   chatInput.disabled = true;
@@ -922,6 +970,8 @@ async function sendChatMessage(message, attachment) {
     attachment ? { url: displayUrl, isImage: attachment.isImage, name: attachment.name } : null,
     userIndex,
   );
+
+  const statusHandle = showStatusIndicator(chatWindow, CHAT_STATUS_PHRASES);
 
   try {
     let attachmentPayload = null;
@@ -965,6 +1015,8 @@ async function sendChatMessage(message, attachment) {
 
     chatHistory.push({ role: "user", parts: [{ text: historyText }] });
 
+    statusHandle.stop();
+
     if (data.clarify) {
       // The AI wants more detail before answering — save its question as
       // the "reply" for this turn so context/history stay consistent, then
@@ -1002,6 +1054,7 @@ async function sendChatMessage(message, attachment) {
   } catch (error) {
     console.error(error);
 
+    statusHandle.stop();
     addMessage(chatWindow, "⚠️ Unable to contact the server.", "system");
   } finally {
     chatInput.disabled = false;
@@ -1195,8 +1248,35 @@ voiceOrbBtn.addEventListener("click", () => {
 // -----------------------------
 // Send Voice Message
 // -----------------------------
+const VOICE_STATUS_PHRASES = [
+  "Thinking...",
+  "Working on it...",
+  "Almost ready...",
+];
+
+// Cycles voiceStatus through a few short phrases (with the shimmer style
+// from .voice-status.thinking) while waiting on the server. Returns a
+// function that stops the cycle — safe to call more than once.
+function startVoiceStatusCycle() {
+  let i = 0;
+  let stopped = false;
+  voiceStatus.classList.add("thinking");
+  voiceStatus.textContent = VOICE_STATUS_PHRASES[0];
+  const timer = setInterval(() => {
+    i = (i + 1) % VOICE_STATUS_PHRASES.length;
+    voiceStatus.textContent = VOICE_STATUS_PHRASES[i];
+  }, 1700);
+
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    voiceStatus.classList.remove("thinking");
+  };
+}
+
 async function sendVoiceMessage(message) {
-  voiceStatus.textContent = "Thinking...";
+  const stopStatusCycle = startVoiceStatusCycle();
 
   try {
     const response = await fetch("/api/voice_chat", {
@@ -1221,6 +1301,8 @@ async function sendVoiceMessage(message) {
       throw new Error(data.error);
     }
 
+    stopStatusCycle();
+
     voiceHistory.push({
       role: "user",
 
@@ -1243,6 +1325,7 @@ async function sendVoiceMessage(message) {
   } catch (err) {
     console.error(err);
 
+    stopStatusCycle();
     voiceStatus.textContent = "Server Error";
 
     voiceTranscript.textContent = "Unable to connect.";

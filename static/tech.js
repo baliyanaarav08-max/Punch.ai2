@@ -41,10 +41,55 @@ function typeTechMessage(fullText, speedMs = 18) {
   });
 }
 
+// Shows a small shimmering status line while waiting on the AI, cycling
+// through a few phrases instead of sitting on one static word. Mirrors the
+// same pattern used on the main chat (see script.js: showStatusIndicator).
+const TECH_STATUS_PHRASES = [
+  'Checking today\'s prices...',
+  'Comparing specs...',
+  'Scanning the latest listings...',
+  'Crunching the numbers...',
+];
+
+function showTechStatusIndicator() {
+  const div = document.createElement('div');
+  div.className = 'msg assistant status-msg';
+  const textSpan = document.createElement('span');
+  textSpan.className = 'status-text';
+  textSpan.textContent = TECH_STATUS_PHRASES[0];
+  div.appendChild(textSpan);
+  techChatWindow.appendChild(div);
+  techChatWindow.scrollTop = techChatWindow.scrollHeight;
+
+  let i = 0;
+  let stopped = false;
+  const timer = setInterval(() => {
+    textSpan.classList.add('status-fade');
+    setTimeout(() => {
+      if (stopped) return;
+      i = (i + 1) % TECH_STATUS_PHRASES.length;
+      textSpan.textContent = TECH_STATUS_PHRASES[i];
+      textSpan.classList.remove('status-fade');
+      techChatWindow.scrollTop = techChatWindow.scrollHeight;
+    }, 200);
+  }, 2000);
+
+  return {
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+      div.remove();
+    },
+  };
+}
+
 async function sendTechMessage(message) {
   if (!message) return;
   techChatInput.disabled = true;
   addTechMessage(message, 'user');
+
+  const statusHandle = showTechStatusIndicator();
 
   try {
     const res = await fetch('/api/tech_chat', {
@@ -53,6 +98,7 @@ async function sendTechMessage(message) {
       body: JSON.stringify({ message, history: techHistory })
     });
     const data = await res.json();
+    statusHandle.stop();
     if (data.reply) {
       techHistory.push({ role: 'user', parts: [{ text: message }] });
       techHistory.push({ role: 'model', parts: [{ text: data.reply }] });
@@ -61,6 +107,7 @@ async function sendTechMessage(message) {
       addTechMessage(data.error || 'Something went wrong.', 'system');
     }
   } catch (err) {
+    statusHandle.stop();
     addTechMessage('Connection error. Is the server running?', 'system');
   } finally {
     techChatInput.disabled = false;
