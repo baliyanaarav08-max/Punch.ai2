@@ -226,7 +226,10 @@ def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=F
             "Otherwise — if the user just wants information, a normal written answer, or "
             "isn't asking for a downloadable file — ignore this and respond normally in "
             "plain text. Don't produce a PDF for things that are better as a normal chat "
-            "reply."
+            "reply. Keep the content focused and reasonably concise — for long-running plans "
+            "(e.g. a multi-week schedule), summarize the repeating pattern and any variation "
+            "instead of spelling out every single day in full detail, so the whole document "
+            "fits comfortably in one reply."
         )
     if context_block:
         base += (
@@ -663,7 +666,13 @@ def chat():
     contents_fallback = (history + [{"role": "user", "parts": [{"text": fallback_text}]}])[-20:]
 
     try:
-        reply = get_ai_reply(system_prompt, contents, contents_fallback=contents_fallback)
+        # A generated PDF's content (title/filename/content all wrapped in
+        # one JSON reply) can run well past a normal chat answer's length —
+        # 2048 tokens was cutting long documents off mid-JSON, which broke
+        # parsing and dumped the raw broken JSON into the chat. Use a much
+        # higher budget here; normal short answers aren't affected by a
+        # higher ceiling, they just stop naturally when they're done.
+        reply = get_ai_reply(system_prompt, contents, max_tokens=8192, contents_fallback=contents_fallback)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
@@ -693,6 +702,23 @@ def chat():
                 "filename": pdf_payload["filename"],
                 "data": base64.b64encode(pdf_bytes).decode("ascii"),
                 "reply": f"Here's **{pdf_payload['title']}** as a PDF, ready to download.",
+            }
+        )
+
+    # The model clearly *tried* to produce a generate_pdf JSON directive
+    # (per the system prompt) but it didn't parse — almost always because
+    # the reply got cut off mid-JSON by the token limit, or a stray
+    # unescaped character broke it. Rather than dumping the broken raw
+    # JSON into the chat (which is what happened before this check existed),
+    # ask the model to retry with a smaller scope.
+    if '"generate_pdf"' in reply and "generate_pdf" in reply[:40]:
+        return jsonify(
+            {
+                "reply": (
+                    "I tried to put that together as a PDF but the document came out too "
+                    "long to finish properly. Could you ask for a shorter version, or split "
+                    "it into a couple of smaller PDFs (e.g. one week at a time)?"
+                )
             }
         )
 
