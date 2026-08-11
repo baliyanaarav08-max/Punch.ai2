@@ -14,6 +14,11 @@ try:
 except ImportError:  # pragma: no cover - surfaced clearly at request time instead
     PdfReader = None
 
+try:
+    from fpdf import FPDF
+except ImportError:  # pragma: no cover - surfaced clearly at request time instead
+    FPDF = None
+
 app = Flask(__name__)
 
 # --- Gemini (Google AI Studio) ---
@@ -97,7 +102,7 @@ def web_search(query, num=4):
         return None
 
 
-def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=False):
+def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=False, allow_pdf_generation=False):
     base = (
         f"You are {ASSISTANT_NAME}, a helpful, knowledgeable AI assistant. "
         f"Give thorough, specific, well-reasoned answers — include concrete facts, names, "
@@ -203,6 +208,25 @@ def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=F
             "2 to 4 short options, each just a few words, covering the most likely "
             "interpretations. Do not wrap it in markdown code fences.\n\n"
             "Otherwise, ignore all of this and just answer the user normally in plain text."
+        )
+    if allow_pdf_generation:
+        base += (
+            "\n\nIf — and only if — the user is explicitly asking you to create, generate, "
+            "write out, or export an actual PDF document (e.g. \"make me a PDF of...\", "
+            "\"turn this into a PDF\", \"generate a PDF report on...\", \"export this as a "
+            "PDF\"), respond with ONLY a single JSON object and nothing else before or after "
+            'it, in exactly this shape: {"generate_pdf": true, "title": "<short document '
+            'title>", "filename": "<short-file-name.pdf, no spaces>", "content": "<the full '
+            "document body, plain text — use a leading '# ' for the main heading, '## ' for "
+            "section headings, '- ' for bullet points, blank lines between paragraphs. Do "
+            'not use any other markdown.>"} — write real, complete, well-organized content '
+            "for whatever the user asked for, not a placeholder. Escape any double-quotes or "
+            "newlines inside the JSON string values properly so the JSON stays valid. Do not "
+            "wrap it in markdown code fences.\n\n"
+            "Otherwise — if the user just wants information, a normal written answer, or "
+            "isn't asking for a downloadable file — ignore this and respond normally in "
+            "plain text. Don't produce a PDF for things that are better as a normal chat "
+            "reply."
         )
     if context_block:
         base += (
@@ -463,6 +487,82 @@ def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=Non
     raise RuntimeError(" | ".join(errors))
 
 
+def generate_pdf_bytes(title, content):
+    """Renders simple structured text into an actual PDF file using fpdf2.
+
+    This isn't a full markdown renderer — it only understands the small
+    subset the model is instructed to use in build_system_prompt's
+    allow_pdf_generation block: '# '/'## ' headings, '- ' bullets, and
+    blank-line-separated paragraphs. That's enough for reports, summaries,
+    notes, and similar generated documents to come out clean and readable.
+    """
+    if FPDF is None:
+        raise RuntimeError("fpdf2 isn't installed on the server (pip install fpdf2)")
+
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.set_margins(18, 18, 18)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.multi_cell(0, 10, title or "Document")
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "", 11)
+    for raw_line in (content or "").split("\n"):
+        line = raw_line.rstrip()
+        if not line:
+            pdf.ln(4)
+            continue
+        if line.startswith("## "):
+            pdf.set_font("Helvetica", "B", 14)
+            pdf.multi_cell(0, 8, line[3:].strip())
+            pdf.set_font("Helvetica", "", 11)
+        elif line.startswith("# "):
+            pdf.set_font("Helvetica", "B", 16)
+            pdf.multi_cell(0, 9, line[2:].strip())
+            pdf.set_font("Helvetica", "", 11)
+        elif line.startswith("- ") or line.startswith("* "):
+            pdf.multi_cell(0, 7, f"    \u2022  {line[2:].strip()}")
+        else:
+            pdf.multi_cell(0, 7, line)
+
+    raw = pdf.output()  # fpdf2 returns a bytearray directly
+    return bytes(raw)
+
+
+def parse_pdf_generation_reply(reply_text):
+    """If the model responded with a generate-pdf JSON object (per the
+    allow_pdf_generation instruction in build_system_prompt), parse and
+    return it as {title, filename, content}. Returns None for a normal
+    text reply or a clarify reply."""
+    if not reply_text:
+        return None
+    candidate = reply_text.strip()
+    if candidate.startswith("```"):
+        candidate = candidate.strip("`")
+        if candidate.lower().startswith("json"):
+            candidate = candidate[4:]
+        candidate = candidate.strip()
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or parsed.get("generate_pdf") is not True:
+        return None
+    content = str(parsed.get("content") or "").strip()
+    if not content:
+        return None
+    title = str(parsed.get("title") or "Document").strip()
+    filename = str(parsed.get("filename") or title or "document").strip()
+    filename = re.sub(r"[^\w\-. ]", "", filename).strip() or "document"
+    if not filename.lower().endswith(".pdf"):
+        filename += ".pdf"
+    return {"title": title, "filename": filename, "content": content}
+
+
 def parse_clarify_reply(reply_text):
     """If the model responded with a clarify-question JSON object (per the
     allow_clarify instruction in build_system_prompt), parse and return it
@@ -549,7 +649,11 @@ def chat():
 
     context_block = web_search(message) if message and needs_search(message) else None
     system_prompt = build_system_prompt(
-        voice_mode=False, context_block=context_block, profile=profile, allow_clarify=True
+        voice_mode=False,
+        context_block=context_block,
+        profile=profile,
+        allow_clarify=True,
+        allow_pdf_generation=True,
     )
 
     user_parts = build_user_parts(message, attachments)
@@ -566,6 +670,31 @@ def chat():
     clarify_payload = parse_clarify_reply(reply)
     if clarify_payload:
         return jsonify(clarify_payload)
+
+    pdf_payload = parse_pdf_generation_reply(reply)
+    if pdf_payload:
+        try:
+            pdf_bytes = generate_pdf_bytes(pdf_payload["title"], pdf_payload["content"])
+        except Exception as e:
+            # Fall back to just showing the content as text if PDF rendering
+            # itself fails (e.g. fpdf2 missing) — better than a dead end.
+            return jsonify(
+                {
+                    "reply": (
+                        f"I put together the content but couldn't render it as a PDF file "
+                        f"({e}). Here it is as text instead:\n\n{pdf_payload['content']}"
+                    )
+                }
+            )
+        return jsonify(
+            {
+                "pdf": True,
+                "title": pdf_payload["title"],
+                "filename": pdf_payload["filename"],
+                "data": base64.b64encode(pdf_bytes).decode("ascii"),
+                "reply": f"Here's **{pdf_payload['title']}** as a PDF, ready to download.",
+            }
+        )
 
     return jsonify({"reply": reply})
 

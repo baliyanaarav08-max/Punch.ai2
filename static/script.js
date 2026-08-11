@@ -1112,6 +1112,41 @@ const CHAT_STATUS_PHRASES = [
   "Almost done...",
 ];
 
+// Drops a small download card into the chat window for an AI-generated PDF.
+// The file is delivered as base64 in the API response and turned into a
+// data: URL here — no server-side file storage needed.
+function appendPdfDownloadCard(container, filename, base64Data, title) {
+  const div = document.createElement("div");
+  div.className = "msg assistant pdf-card";
+
+  const icon = document.createElement("div");
+  icon.className = "pdf-card-icon";
+  icon.textContent = "📄";
+  div.appendChild(icon);
+
+  const info = document.createElement("div");
+  info.className = "pdf-card-info";
+  const nameEl = document.createElement("div");
+  nameEl.className = "pdf-card-title";
+  nameEl.textContent = title || filename;
+  const subEl = document.createElement("div");
+  subEl.className = "pdf-card-filename";
+  subEl.textContent = filename;
+  info.appendChild(nameEl);
+  info.appendChild(subEl);
+  div.appendChild(info);
+
+  const link = document.createElement("a");
+  link.className = "pdf-card-download";
+  link.href = `data:application/pdf;base64,${base64Data}`;
+  link.download = filename;
+  link.textContent = "Download";
+  div.appendChild(link);
+
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
 async function sendChatMessage(message, attachmentOrList) {
   hideClarifyCard();
   chatInput.disabled = true;
@@ -1195,6 +1230,26 @@ async function sendChatMessage(message, attachmentOrList) {
         saveMessagePair(currentUser.uid, currentChatId, message, data.question, isFirstMessage, null).catch(
           (err) => console.error("Failed to save chat:", err),
         );
+      }
+      return;
+    }
+
+    if (data.pdf) {
+      // The AI generated a document — render the reply text, then drop a
+      // download card into the chat with the actual PDF file attached as a
+      // data URL (no server-side file storage needed for this).
+      chatHistory.push({ role: "model", parts: [{ text: data.reply || `Generated ${data.filename}` }] });
+
+      const assistantIndex2 = userIndex + 1;
+      const assistantDiv2 = await typeMessage(chatWindow, data.reply || `Here's ${data.filename}.`, assistantIndex2);
+      appendPdfDownloadCard(chatWindow, data.filename, data.data, data.title);
+
+      if (currentUser && currentChatId) {
+        saveMessagePair(currentUser.uid, currentChatId, message, data.reply, isFirstMessage, null)
+          .then((modelDocId) => {
+            if (assistantDiv2 && modelDocId) assistantDiv2.dataset.msgDocId = modelDocId;
+          })
+          .catch((err) => console.error("Failed to save chat:", err));
       }
       return;
     }
