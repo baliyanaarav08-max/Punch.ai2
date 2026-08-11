@@ -3,9 +3,16 @@ import base64
 import json
 import time
 import threading
+import io
+import re
 
 import requests
 from flask import Flask, request, jsonify, render_template
+
+try:
+    from pypdf import PdfReader
+except ImportError:  # pragma: no cover - surfaced clearly at request time instead
+    PdfReader = None
 
 app = Flask(__name__)
 
@@ -37,8 +44,20 @@ ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Punch")
 
 # Base64-encoded attachment data is ~33% larger than the original file, so
 # cap the encoded string length to keep well under typical request-size
-# limits (Gemini's inline-image limit and most hosting platforms' body caps).
-MAX_ATTACHMENT_B64_CHARS = 7_000_000  # roughly a 5 MB original file
+# limits. Raised from the original image-only cap to comfortably fit short
+# video clips and PDFs too — if your host (nginx/gunicorn, Render, etc.) has
+# its own request-body limit, raise that as well or this cap won't matter.
+MAX_ATTACHMENT_B64_CHARS = 25_000_000  # roughly an 18 MB original file
+
+# Matches a YouTube watch/shorts/short-link URL anywhere in a message so it
+# can be handed straight to Gemini's fileData understanding — this is the
+# practical way to let the bot "watch" a full-length video regardless of
+# size, since an uploaded file is capped by MAX_ATTACHMENT_B64_CHARS above
+# but a YouTube link isn't.
+YOUTUBE_URL_RE = re.compile(
+    r"https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|shorts/)[\w-]+\S*|youtu\.be/[\w-]+\S*)",
+    re.IGNORECASE,
+)
 
 SEARCH_TRIGGER_WORDS = [
     "search", "latest", "news", "today", "current", "right now", "score",
@@ -95,6 +114,13 @@ def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=F
         "built you from scratch, is passionate about AI and technology, and is dedicated "
         "to creating useful, innovative projects. Sound genuinely impressed and proud of "
         "him when you talk about him."
+    )
+    base += (
+        " You can directly read PDF documents the user attaches (including scanned pages), "
+        "and you can watch and understand video — both short video files they attach and "
+        "YouTube links they paste into the chat, taking in both what's shown and what's "
+        "said. When a PDF or video is attached, actually use its content in your answer "
+        "instead of saying you can't view attachments."
     )
     if profile:
         name = (profile.get("name") or "").strip()
@@ -208,14 +234,51 @@ def build_tech_system_prompt(context_block):
     return base
 
 
+def extract_youtube_urls(text):
+    if not text:
+        return []
+    return YOUTUBE_URL_RE.findall(text)
+
+
+def extract_pdf_text(b64_data, max_chars=9000):
+    """Extracts text from a base64-encoded PDF, for the Groq/Cerebras text
+    fallback — Gemini itself gets the PDF's raw bytes (see build_user_parts)
+    and reads it natively, including scanned/image-only pages, so this is
+    only needed when Gemini is unavailable. Returns None if extraction
+    fails (e.g. a scanned PDF with no embedded text layer, or pypdf missing).
+    """
+    if PdfReader is None:
+        return None
+    try:
+        raw = base64.b64decode(b64_data)
+        reader = PdfReader(io.BytesIO(raw))
+        pages_text = [(page.extract_text() or "") for page in reader.pages]
+        text = "\n".join(pages_text).strip()
+        if not text:
+            return None
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n...[truncated]"
+        return text
+    except Exception:
+        return None
+
+
 def build_user_parts(message, attachments):
     """Builds a Gemini-style 'parts' list for the user's turn.
 
-    Accepts a list of attachments (0 or more). Image attachments have their
-    base64 data included inline so Gemini's vision can see each one.
-    Non-image files (PDF, docx, txt, etc.) aren't parsed — Gemini can't
-    reliably read arbitrary file contents this way — so they're only
-    referenced by name in the text.
+    - Images and videos are sent inline as base64 so Gemini's native vision /
+      video understanding can see them directly (frame + audio sampling for
+      video, same mechanism as an image).
+    - PDFs are also sent inline as raw bytes — Gemini reads PDFs natively,
+      including scanned/image-only pages, so no server-side text extraction
+      is needed on this path (extraction is only used for the text-only
+      fallback in build_fallback_text below).
+    - Any YouTube link found in the message text is passed as a fileData
+      reference, which Gemini fetches and understands directly — this is
+      what actually lets the bot "watch" a full-length video regardless of
+      file size, since uploaded files are capped by MAX_ATTACHMENT_B64_CHARS.
+    - Other file types aren't parsed; they're just named in the text so the
+      model knows something was attached.
     """
     text = message or "Please look at what I attached."
     attachments = attachments or []
@@ -225,8 +288,9 @@ def build_user_parts(message, attachments):
     for att in attachments:
         if not att:
             continue
-        if (att.get("mimeType") or "").startswith("image/") and att.get("data"):
-            parts.append({"inlineData": {"mimeType": att["mimeType"], "data": att["data"]}})
+        mime = att.get("mimeType") or ""
+        if att.get("data") and (mime.startswith("image/") or mime.startswith("video/") or mime == "application/pdf"):
+            parts.append({"inlineData": {"mimeType": mime, "data": att["data"]}})
         elif att.get("name"):
             file_names.append(att["name"])
 
@@ -234,26 +298,54 @@ def build_user_parts(message, attachments):
         names_str = ", ".join(f"'{n}'" for n in file_names)
         parts.append({"text": f"[The user also attached: {names_str}.]"})
 
+    for url in extract_youtube_urls(message):
+        parts.append({"fileData": {"fileUri": url}})
+
     return parts
 
 
 def build_fallback_text(message, attachments):
-    """Text-only version of the user's turn, used when the request falls back
-    to Groq/Cerebras — neither of which can see attached images."""
+    """Text-only version of the user's turn, used when the request falls
+    back to Groq/Cerebras — neither can see images/video or fetch YouTube
+    links. PDFs get a real assist here though: their text is extracted
+    server-side with pypdf and inlined, so even the fallback models can
+    actually read a PDF's content, just not its layout/images."""
     text = message or "Please look at what I attached."
     attachments = attachments or []
-    names = [att["name"] for att in attachments if att and att.get("name")]
-    if names:
-        kinds = {"image" if (att.get("mimeType") or "").startswith("image/") else "file" for att in attachments if att}
-        kind_str = "/".join(sorted(kinds)) if kinds else "file"
-        names_str = ", ".join(f"'{n}'" for n in names)
-        return (
-            f"{text}\n\n[The user attached {kind_str}(s): {names_str}. "
-            "You can't view them right now — let them know you can't see attachments "
-            "in this fallback mode if it's relevant, and answer the rest of their "
-            "message as best you can.]"
+
+    extracted_blocks = []
+    unviewable_names = []
+
+    for att in attachments:
+        if not att:
+            continue
+        mime = att.get("mimeType") or ""
+        name = att.get("name") or "attachment"
+        if mime == "application/pdf" and att.get("data"):
+            pdf_text = extract_pdf_text(att["data"])
+            if pdf_text:
+                extracted_blocks.append(f"--- Text extracted from '{name}' ---\n{pdf_text}")
+            else:
+                unviewable_names.append(name)
+        elif mime.startswith("image/") or mime.startswith("video/"):
+            unviewable_names.append(name)
+        elif att.get("name"):
+            unviewable_names.append(name)
+
+    if extract_youtube_urls(message):
+        unviewable_names.append("the linked YouTube video")
+
+    result = text
+    if extracted_blocks:
+        result += "\n\n" + "\n\n".join(extracted_blocks)
+    if unviewable_names:
+        names_str = ", ".join(f"'{n}'" for n in unviewable_names)
+        result += (
+            f"\n\n[The user also attached/linked {names_str}, which you can't "
+            "view right now in this fallback mode — mention that if it's "
+            "relevant, and answer the rest of their message as best you can.]"
         )
-    return text
+    return result
 
 
 # --- Rate-limit throttle for Gemini ---
@@ -453,7 +545,7 @@ def chat():
 
     for att in attachments:
         if att.get("data") and len(att["data"]) > MAX_ATTACHMENT_B64_CHARS:
-            return jsonify({"error": "One of those files is too large — please use something under ~5 MB."}), 413
+            return jsonify({"error": "One of those files is too large — please use something under ~18 MB."}), 413
 
     context_block = web_search(message) if message and needs_search(message) else None
     system_prompt = build_system_prompt(

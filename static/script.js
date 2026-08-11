@@ -45,7 +45,7 @@ const chatAttachInput = document.getElementById("chat-attach-input");
 const chatAttachBtn = document.getElementById("chat-attach-btn");
 const chatAttachPreview = document.getElementById("chat-attach-preview");
 
-const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB, matches the server-side cap
+const MAX_ATTACHMENT_BYTES = 18 * 1024 * 1024; // 18 MB, matches the server-side cap
 const MAX_ATTACHMENTS_PER_MESSAGE = 4;
 let pendingAttachments = []; // [{ file, isImage, mimeType, name, localPreviewUrl }, ...]
 
@@ -81,7 +81,8 @@ function renderAttachPreview() {
 
     const name = document.createElement("span");
     name.className = "chat-attach-name";
-    name.textContent = att.name;
+    const prefix = att.isVideo ? "🎬 " : att.mimeType === "application/pdf" ? "📄 " : "";
+    name.textContent = prefix + att.name;
     chip.appendChild(name);
 
     const remove = document.createElement("button");
@@ -125,16 +126,24 @@ function handleSelectedFile(fileOrFiles) {
       break;
     }
     if (file.size > MAX_ATTACHMENT_BYTES) {
-      alert(`"${file.name}" is too large — please use something under 5 MB.`);
+      alert(`"${file.name}" is too large — please use something under 18 MB.`);
       continue;
     }
-    const isImage = file.type.startsWith("image/");
+    const mimeType = file.type || "application/octet-stream";
+    const isImage = mimeType.startsWith("image/");
+    const isVideo = mimeType.startsWith("video/");
+    // These are the types the backend actually reads directly (Gemini's
+    // native image/video/PDF understanding) — everything else is just
+    // referenced by filename, so there's no point base64-encoding it.
+    const sendFullData = isImage || isVideo || mimeType === "application/pdf";
     pendingAttachments.push({
       file,
       isImage,
-      mimeType: file.type || "application/octet-stream",
+      isVideo,
+      sendFullData,
+      mimeType,
       name: file.name,
-      localPreviewUrl: isImage ? URL.createObjectURL(file) : null,
+      localPreviewUrl: isImage || isVideo ? URL.createObjectURL(file) : null,
     });
   }
   renderAttachPreview();
@@ -684,11 +693,11 @@ async function saveMessagePair(uid, chatId, userText, replyText, isFirstMessage,
     // Keep the old single-attachment fields for backward compatibility with
     // any existing reads, plus a full list for multi-attachment messages.
     userDoc.attachmentURL = list[0].url;
-    userDoc.attachmentType = list[0].isImage ? "image" : "file";
+    userDoc.attachmentType = list[0].isVideo ? "video" : list[0].isImage ? "image" : "file";
     userDoc.attachmentName = list[0].name;
     userDoc.attachments = list.map((a) => ({
       url: a.url,
-      type: a.isImage ? "image" : "file",
+      type: a.isVideo ? "video" : a.isImage ? "image" : "file",
       name: a.name,
     }));
   }
@@ -887,6 +896,12 @@ function addMessage(container, message, sender, attachment, historyIndex) {
       img.src = att.url;
       img.alt = att.name || "Attached image";
       div.appendChild(img);
+    } else if ((att.type === "video" || att.isVideo) && att.url) {
+      const video = document.createElement("video");
+      video.className = "msg-attachment-video";
+      video.src = att.url;
+      video.controls = true;
+      div.appendChild(video);
     } else if (att.name) {
       const chip = document.createElement("div");
       chip.className = "msg-attachment-file";
@@ -1119,7 +1134,7 @@ async function sendChatMessage(message, attachmentOrList) {
     message,
     "user",
     attachments.length > 0
-      ? attachments.map((a) => ({ url: a.localPreviewUrl, isImage: a.isImage, name: a.name }))
+      ? attachments.map((a) => ({ url: a.localPreviewUrl, isImage: a.isImage, isVideo: a.isVideo, name: a.name }))
       : null,
     userIndex,
   );
@@ -1127,14 +1142,13 @@ async function sendChatMessage(message, attachmentOrList) {
   const statusHandle = showStatusIndicator(chatWindow, CHAT_STATUS_PHRASES);
 
   try {
-    // Only images are sent inline as base64 (for vision); other file types
-    // are sent as name/mimeType only, matching the previous single-file
-    // behavior — the backend doesn't parse non-image bytes today.
+    // Images, videos, and PDFs are sent inline as base64 so Gemini can read
+    // them directly; other file types are sent as name/mimeType only.
     const attachmentPayloads = await Promise.all(
       attachments.map(async (att) => ({
         mimeType: att.mimeType,
         name: att.name,
-        data: att.isImage ? await fileToBase64(att.file) : null,
+        data: att.sendFullData ? await fileToBase64(att.file) : null,
       })),
     );
 
@@ -1196,7 +1210,7 @@ async function sendChatMessage(message, attachmentOrList) {
         for (const att of attachments) {
           try {
             const storedUrl = await uploadAttachmentToStorage(currentUser.uid, currentChatId, att.file);
-            attachmentInfos.push({ url: storedUrl, isImage: att.isImage, name: att.name });
+            attachmentInfos.push({ url: storedUrl, isImage: att.isImage, isVideo: att.isVideo, name: att.name });
           } catch (err) {
             console.error("Attachment upload to Storage failed:", err);
           }
