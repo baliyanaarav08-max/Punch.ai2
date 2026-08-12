@@ -1149,93 +1149,6 @@ a { color: inherit; text-decoration: none; }
   justify-content: center;
 }
 
-/* ---------- Model picker (chat input row) ---------- */
-.model-select-wrap {
-  position: relative;
-  flex-shrink: 0;
-}
-.model-select-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-family: var(--font-body);
-  font-size: 12.5px;
-  font-weight: 600;
-  padding: 0 12px;
-  height: 40px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: border-color 0.2s ease, color 0.2s ease;
-}
-.model-select-btn:hover {
-  border-color: var(--violet-dim);
-  color: var(--text);
-  box-shadow: none;
-}
-.model-select-wrap.open .model-select-btn {
-  border-color: var(--violet-bright);
-  color: var(--text);
-}
-.model-select-wrap.open .model-select-btn svg {
-  transform: rotate(180deg);
-}
-.model-select-btn svg {
-  transition: transform 0.15s ease;
-  flex-shrink: 0;
-}
-
-.model-select-menu {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  right: 0;
-  width: 240px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 6px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.model-select-menu.hidden { display: none; }
-
-.model-option {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  width: 100%;
-  background: none;
-  border: none;
-  color: var(--text);
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-family: var(--font-body);
-}
-.model-option:hover {
-  background: rgba(139, 92, 246, 0.12);
-  box-shadow: none;
-}
-.model-option.selected {
-  background: rgba(139, 92, 246, 0.18);
-}
-.model-option-name {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-}
-.model-option-sub {
-  font-size: 11.5px;
-  color: var(--text-dim);
-}
-
 /* Floating "scroll to latest message" button — shown (via JS toggling
    .hidden) only once the user has scrolled up away from the bottom of the
    chat window, so it doesn't clutter the view the rest of the time. */
@@ -1561,7 +1474,7 @@ a { color: inherit; text-decoration: none; }
 .msg:hover .msg-actions { opacity: 1; }
 .msg.user .msg-actions { justify-content: flex-end; }
 
-/* "Answered by Punch Lite/Pro/Max" tag under an assistant reply */
+/* "Answered by Punch Prime/Flash/Turbo" tag under an assistant reply */
 .provider-badge {
   display: inline-block;
   margin-top: 8px;

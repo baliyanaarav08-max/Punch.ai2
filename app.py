@@ -1,4 +1,3 @@
-
 import os
 import base64
 import json
@@ -471,28 +470,18 @@ def ask_cerebras(system_prompt, contents, max_tokens=2048):
 
 
 PROVIDER_DISPLAY_NAMES = {
-    "gemini": "Punch Max",
-    "groq": "Punch Pro",
-    "cerebras": "Punch Lite",
+    "gemini": "Punch Prime",
+    "groq": "Punch Flash",
+    "cerebras": "Punch Turbo",
 }
 
-# Lets the user actually pick which engine handles their message (via the
-# model dropdown in the chat input), rather than only seeing which one
-# happened to answer after the fact. The picked provider is tried first;
-# if it fails, the usual fallback chain still runs so the message doesn't
-# just die because someone's pinned choice is temporarily down.
-TIER_TO_PROVIDER = {"max": "gemini", "pro": "groq", "lite": "cerebras"}
 
+def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=None):
+    """Tries Gemini -> Groq -> Cerebras, in that order, until one succeeds.
 
-def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=None, preferred_provider=None):
-    """Tries providers in order until one succeeds — normally Gemini -> Groq
-    -> Cerebras, but if `preferred_provider` is set (from the user's model
-    picker), that one is tried first and the rest still follow as a
-    fallback chain.
-
-    `contents` is used for Gemini (may include inline image/video/PDF data).
-    If Gemini fails/isn't picked and we fall back to Groq/Cerebras,
-    `contents_fallback` is used instead — those providers are text-only.
+    `contents` is used for Gemini (may include an inline image). If Gemini
+    fails and we fall back to Groq/Cerebras, `contents_fallback` is used
+    instead — those providers are text-only and can't see attached images.
 
     Returns (reply_text, provider_display_name) — the display name is a
     Punch-branded label (never the underlying provider's real name), so the
@@ -500,16 +489,12 @@ def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=Non
     Cerebras as implementation details.
     """
     fallback = contents_fallback if contents_fallback is not None else contents
-    chain = [
+    errors = []
+    for name, fn, turns in (
         ("gemini", ask_gemini, contents),
         ("groq", ask_groq, fallback),
         ("cerebras", ask_cerebras, fallback),
-    ]
-    if preferred_provider in TIER_TO_PROVIDER.values():
-        chain.sort(key=lambda item: item[0] != preferred_provider)
-
-    errors = []
-    for name, fn, turns in chain:
+    ):
         try:
             text = fn(system_prompt, turns, max_tokens=max_tokens)
             return text, PROVIDER_DISPLAY_NAMES.get(name, ASSISTANT_NAME)
@@ -640,7 +625,6 @@ def tech_chat():
     data = request.get_json(force=True)
     message = (data.get("message") or "").strip()
     history = data.get("history") or []
-    preferred_provider = TIER_TO_PROVIDER.get((data.get("model") or "").strip().lower())
     if not message:
         return jsonify({"error": "Empty message"}), 400
 
@@ -651,7 +635,7 @@ def tech_chat():
     contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
 
     try:
-        reply, provider = get_ai_reply(system_prompt, contents, preferred_provider=preferred_provider)
+        reply, provider = get_ai_reply(system_prompt, contents)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
@@ -664,7 +648,6 @@ def chat():
     message = (data.get("message") or "").strip()
     history = data.get("history") or []  # list of {role, parts:[{text}]}
     profile = data.get("profile") or None
-    preferred_provider = TIER_TO_PROVIDER.get((data.get("model") or "").strip().lower())
     # "attachments" is the current multi-file field; "attachment" is kept as
     # a fallback for any older client that only ever sends one.
     attachments = data.get("attachments")
@@ -702,13 +685,7 @@ def chat():
         # parsing and dumped the raw broken JSON into the chat. Use a much
         # higher budget here; normal short answers aren't affected by a
         # higher ceiling, they just stop naturally when they're done.
-        reply, provider = get_ai_reply(
-            system_prompt,
-            contents,
-            max_tokens=8192,
-            contents_fallback=contents_fallback,
-            preferred_provider=preferred_provider,
-        )
+        reply, provider = get_ai_reply(system_prompt, contents, max_tokens=8192, contents_fallback=contents_fallback)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
