@@ -4,6 +4,42 @@ const techChatWindow = document.getElementById('tech-chat-window');
 const techChatForm = document.getElementById('tech-chat-form');
 const techChatInput = document.getElementById('tech-chat-input');
 
+// ==========================================
+// Punch AI - Model picker (Tech Desk)
+// ==========================================
+const techModelSelectWrap = document.getElementById('tech-model-select-wrap');
+const techModelSelectBtn = document.getElementById('tech-model-select-btn');
+const techModelSelectLabel = document.getElementById('tech-model-select-label');
+const techModelSelectMenu = document.getElementById('tech-model-select-menu');
+
+const TECH_MODEL_LABELS = { lite: 'Punch Lite', pro: 'Punch Pro', max: 'Punch Max' };
+let techSelectedModelTier = 'max';
+
+if (techModelSelectBtn) {
+  techModelSelectBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    techModelSelectWrap.classList.toggle('open');
+    techModelSelectMenu.classList.toggle('hidden');
+  });
+
+  techModelSelectMenu.querySelectorAll('.model-option').forEach((opt) => {
+    opt.addEventListener('click', () => {
+      techSelectedModelTier = opt.dataset.model;
+      techModelSelectLabel.textContent = TECH_MODEL_LABELS[techSelectedModelTier] || 'Punch Max';
+      techModelSelectMenu.querySelectorAll('.model-option').forEach((o) => o.classList.toggle('selected', o === opt));
+      techModelSelectWrap.classList.remove('open');
+      techModelSelectMenu.classList.add('hidden');
+    });
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!techModelSelectWrap.contains(e.target)) {
+      techModelSelectWrap.classList.remove('open');
+      techModelSelectMenu.classList.add('hidden');
+    }
+  });
+}
+
 function addTechMessage(text, role) {
   const div = document.createElement('div');
   div.className = `msg ${role}`;
@@ -101,7 +137,7 @@ async function sendTechMessage(message) {
     const res = await fetch('/api/tech_chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history: techHistory })
+      body: JSON.stringify({ message, history: techHistory, model: techSelectedModelTier })
     });
     const data = await res.json();
     statusHandle.stop();

@@ -1210,6 +1210,7 @@ async function sendChatMessage(message, attachmentOrList) {
         profile: profileForApi(),
         attachment: attachmentPayloads[0] || null, // back-compat single field
         attachments: attachmentPayloads,
+        model: selectedModelTier,
       }),
     });
 
@@ -1350,6 +1351,42 @@ if (newChatBtn) {
     clearPendingAttachment();
     hideClarifyCard();
     createNewChat();
+  });
+}
+
+// ==========================================
+// Punch AI - Model picker
+// ==========================================
+const modelSelectWrap = document.getElementById("model-select-wrap");
+const modelSelectBtn = document.getElementById("model-select-btn");
+const modelSelectLabel = document.getElementById("model-select-label");
+const modelSelectMenu = document.getElementById("model-select-menu");
+
+const MODEL_LABELS = { lite: "Punch Lite", pro: "Punch Pro", max: "Punch Max" };
+let selectedModelTier = "max";
+
+if (modelSelectBtn) {
+  modelSelectBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    modelSelectWrap.classList.toggle("open");
+    modelSelectMenu.classList.toggle("hidden");
+  });
+
+  modelSelectMenu.querySelectorAll(".model-option").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      selectedModelTier = opt.dataset.model;
+      modelSelectLabel.textContent = MODEL_LABELS[selectedModelTier] || "Punch Max";
+      modelSelectMenu.querySelectorAll(".model-option").forEach((o) => o.classList.toggle("selected", o === opt));
+      modelSelectWrap.classList.remove("open");
+      modelSelectMenu.classList.add("hidden");
+    });
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!modelSelectWrap.contains(e.target)) {
+      modelSelectWrap.classList.remove("open");
+      modelSelectMenu.classList.add("hidden");
+    }
   });
 }
 
