@@ -1027,7 +1027,7 @@ async function truncateFirestoreMessages(uid, chatId, keepCount) {
 // Types the assistant's reply out word-by-word instead of dumping it
 // instantly, matching how the chat product should feel. Renders as
 // sanitized markdown once the full text has streamed in.
-function typeMessage(container, fullText, historyIndex, speedMs = 18) {
+function typeMessage(container, fullText, historyIndex, provider, speedMs = 18) {
   const div = document.createElement("div");
   div.className = "msg assistant";
   if (historyIndex != null) div.dataset.historyIndex = String(historyIndex);
@@ -1055,6 +1055,7 @@ function typeMessage(container, fullText, historyIndex, speedMs = 18) {
       } else {
         cursor.remove();
         renderRichText(textNode, fullText);
+        if (provider) div.appendChild(buildProviderBadge(provider));
         div.appendChild(buildMessageToolbar("assistant", fullText, historyIndex));
         container.scrollTop = container.scrollHeight;
         resolve(div);
@@ -1062,6 +1063,17 @@ function typeMessage(container, fullText, historyIndex, speedMs = 18) {
     }
     step();
   });
+}
+
+// Small "answered by <engine>" tag shown under an assistant reply — Punch
+// runs on a few different engines behind the scenes (with automatic
+// fallback if one is unavailable), labeled here with Punch-branded names
+// rather than exposing which underlying provider actually handled it.
+function buildProviderBadge(provider) {
+  const badge = document.createElement("div");
+  badge.className = "provider-badge";
+  badge.textContent = provider;
+  return badge;
 }
 
 // ==========================================
@@ -1241,7 +1253,12 @@ async function sendChatMessage(message, attachmentOrList) {
       chatHistory.push({ role: "model", parts: [{ text: data.reply || `Generated ${data.filename}` }] });
 
       const assistantIndex2 = userIndex + 1;
-      const assistantDiv2 = await typeMessage(chatWindow, data.reply || `Here's ${data.filename}.`, assistantIndex2);
+      const assistantDiv2 = await typeMessage(
+        chatWindow,
+        data.reply || `Here's ${data.filename}.`,
+        assistantIndex2,
+        data.provider,
+      );
       appendPdfDownloadCard(chatWindow, data.filename, data.data, data.title);
 
       if (currentUser && currentChatId) {
@@ -1257,7 +1274,7 @@ async function sendChatMessage(message, attachmentOrList) {
     chatHistory.push({ role: "model", parts: [{ text: data.reply }] });
 
     const assistantIndex = userIndex + 1;
-    const assistantDiv = await typeMessage(chatWindow, data.reply, assistantIndex);
+    const assistantDiv = await typeMessage(chatWindow, data.reply, assistantIndex, data.provider);
 
     if (currentUser && currentChatId) {
       (async () => {
@@ -1877,3 +1894,24 @@ window.logout = async function () {
     console.error(err);
   }
 };
+
+// ==========================================
+// Punch AI - Scroll-to-bottom button
+// ==========================================
+// Shown only once the user has scrolled up away from the latest message
+// (e.g. to reread something while a reply is still coming in), so it
+// doesn't sit on screen the rest of the time.
+const scrollBottomBtn = document.getElementById("scroll-bottom-btn");
+if (scrollBottomBtn) {
+  const NEAR_BOTTOM_PX = 80;
+  const isNearBottom = () =>
+    chatWindow.scrollHeight - chatWindow.scrollTop - chatWindow.clientHeight < NEAR_BOTTOM_PX;
+
+  chatWindow.addEventListener("scroll", () => {
+    scrollBottomBtn.classList.toggle("hidden", isNearBottom());
+  });
+
+  scrollBottomBtn.addEventListener("click", () => {
+    chatWindow.scrollTo({ top: chatWindow.scrollHeight, behavior: "smooth" });
+  });
+}

@@ -1136,6 +1136,50 @@ a { color: inherit; text-decoration: none; }
   color: var(--violet-bright);
 }
 
+/* Send button — icon-only circular button instead of a text "Send" pill,
+   shared by the main chat and Tech Desk (both use .chat-input-row). */
+.chat-input-row button[type="submit"] {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Floating "scroll to latest message" button — shown (via JS toggling
+   .hidden) only once the user has scrolled up away from the bottom of the
+   chat window, so it doesn't clutter the view the rest of the time. */
+.scroll-bottom-btn {
+  position: absolute;
+  right: 22px;
+  bottom: 92px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  z-index: 5;
+  transition: opacity 0.2s ease, transform 0.2s ease, background 0.2s ease;
+}
+.scroll-bottom-btn:hover {
+  background: var(--violet-dim);
+  color: #fff;
+}
+.scroll-bottom-btn.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+}
+
 /* Pending-attachment preview row — holds one chip per queued file, shown
    above the input row before send. Supports multiple attachments at once. */
 .chat-attach-preview {
@@ -1184,6 +1228,15 @@ a { color: inherit; text-decoration: none; }
   padding: 2px 5px;
   border-radius: 6px;
   flex-shrink: 0;
+  /* Hidden until the cursor is over the chip, so a queued attachment reads
+     as a clean file/thumbnail card rather than always showing a cancel
+     button — the × only shows up when it's actually about to be used. */
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.chat-attach-chip:hover .chat-attach-remove,
+.chat-attach-remove:focus-visible {
+  opacity: 1;
 }
 .chat-attach-remove:hover {
   color: #f87171;
@@ -1420,6 +1473,17 @@ a { color: inherit; text-decoration: none; }
 }
 .msg:hover .msg-actions { opacity: 1; }
 .msg.user .msg-actions { justify-content: flex-end; }
+
+/* "Answered by Punch Prime/Flash/Turbo" tag under an assistant reply */
+.provider-badge {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.4px;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
 
 .msg-action-btn {
   background: transparent;

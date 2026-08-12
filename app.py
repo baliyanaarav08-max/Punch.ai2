@@ -469,12 +469,24 @@ def ask_cerebras(system_prompt, contents, max_tokens=2048):
     return result["choices"][0]["message"]["content"]
 
 
+PROVIDER_DISPLAY_NAMES = {
+    "gemini": "Punch Prime",
+    "groq": "Punch Flash",
+    "cerebras": "Punch Turbo",
+}
+
+
 def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=None):
     """Tries Gemini -> Groq -> Cerebras, in that order, until one succeeds.
 
     `contents` is used for Gemini (may include an inline image). If Gemini
     fails and we fall back to Groq/Cerebras, `contents_fallback` is used
     instead — those providers are text-only and can't see attached images.
+
+    Returns (reply_text, provider_display_name) — the display name is a
+    Punch-branded label (never the underlying provider's real name), so the
+    UI can show which "engine" answered without exposing Gemini/Groq/
+    Cerebras as implementation details.
     """
     fallback = contents_fallback if contents_fallback is not None else contents
     errors = []
@@ -484,7 +496,8 @@ def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=Non
         ("cerebras", ask_cerebras, fallback),
     ):
         try:
-            return fn(system_prompt, turns, max_tokens=max_tokens)
+            text = fn(system_prompt, turns, max_tokens=max_tokens)
+            return text, PROVIDER_DISPLAY_NAMES.get(name, ASSISTANT_NAME)
         except (requests.RequestException, RuntimeError) as e:
             errors.append(f"{name}: {e}")
     raise RuntimeError(" | ".join(errors))
@@ -622,11 +635,11 @@ def tech_chat():
     contents = (history + [{"role": "user", "parts": [{"text": message}]}])[-20:]
 
     try:
-        reply = get_ai_reply(system_prompt, contents)
+        reply, provider = get_ai_reply(system_prompt, contents)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
-    return jsonify({"reply": reply})
+    return jsonify({"reply": reply, "provider": provider})
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -672,12 +685,13 @@ def chat():
         # parsing and dumped the raw broken JSON into the chat. Use a much
         # higher budget here; normal short answers aren't affected by a
         # higher ceiling, they just stop naturally when they're done.
-        reply = get_ai_reply(system_prompt, contents, max_tokens=8192, contents_fallback=contents_fallback)
+        reply, provider = get_ai_reply(system_prompt, contents, max_tokens=8192, contents_fallback=contents_fallback)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
     clarify_payload = parse_clarify_reply(reply)
     if clarify_payload:
+        clarify_payload["provider"] = provider
         return jsonify(clarify_payload)
 
     pdf_payload = parse_pdf_generation_reply(reply)
@@ -692,7 +706,8 @@ def chat():
                     "reply": (
                         f"I put together the content but couldn't render it as a PDF file "
                         f"({e}). Here it is as text instead:\n\n{pdf_payload['content']}"
-                    )
+                    ),
+                    "provider": provider,
                 }
             )
         return jsonify(
@@ -702,6 +717,7 @@ def chat():
                 "filename": pdf_payload["filename"],
                 "data": base64.b64encode(pdf_bytes).decode("ascii"),
                 "reply": f"Here's **{pdf_payload['title']}** as a PDF, ready to download.",
+                "provider": provider,
             }
         )
 
@@ -718,11 +734,12 @@ def chat():
                     "I tried to put that together as a PDF but the document came out too "
                     "long to finish properly. Could you ask for a shorter version, or split "
                     "it into a couple of smaller PDFs (e.g. one week at a time)?"
-                )
+                ),
+                "provider": provider,
             }
         )
 
-    return jsonify({"reply": reply})
+    return jsonify({"reply": reply, "provider": provider})
 
 
 @app.route("/api/voice_chat", methods=["POST"])
@@ -742,7 +759,7 @@ def voice_chat():
         # Voice replies are capped much lower than chat replies (short spoken
         # answers, not full write-ups) so ElevenLabs isn't asked to read a
         # wall of text and the transcript on screen stays small too.
-        reply = get_ai_reply(system_prompt, contents, max_tokens=220)
+        reply, _provider = get_ai_reply(system_prompt, contents, max_tokens=220)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 

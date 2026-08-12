@@ -12,7 +12,7 @@ function addTechMessage(text, role) {
   techChatWindow.scrollTop = techChatWindow.scrollHeight;
 }
 
-function typeTechMessage(fullText, speedMs = 18) {
+function typeTechMessage(fullText, provider, speedMs = 18) {
   const div = document.createElement('div');
   div.className = 'msg assistant';
   const cursor = document.createElement('span');
@@ -34,6 +34,12 @@ function typeTechMessage(fullText, speedMs = 18) {
         setTimeout(step, speedMs);
       } else {
         cursor.remove();
+        if (provider) {
+          const badge = document.createElement('div');
+          badge.className = 'provider-badge';
+          badge.textContent = provider;
+          div.appendChild(badge);
+        }
         resolve(div);
       }
     }
@@ -102,7 +108,7 @@ async function sendTechMessage(message) {
     if (data.reply) {
       techHistory.push({ role: 'user', parts: [{ text: message }] });
       techHistory.push({ role: 'model', parts: [{ text: data.reply }] });
-      await typeTechMessage(data.reply);
+      await typeTechMessage(data.reply, data.provider);
     } else {
       addTechMessage(data.error || 'Something went wrong.', 'system');
     }
@@ -129,3 +135,23 @@ document.querySelectorAll('.chip').forEach((chip) => {
     sendTechMessage(prompt);
   });
 });
+
+// ==========================================
+// Punch AI - Scroll-to-bottom button
+// ==========================================
+// Shown only once the user has scrolled up away from the latest message,
+// so it doesn't sit on screen the rest of the time.
+const techScrollBottomBtn = document.getElementById('tech-scroll-bottom-btn');
+if (techScrollBottomBtn) {
+  const NEAR_BOTTOM_PX = 80;
+  const isNearBottom = () =>
+    techChatWindow.scrollHeight - techChatWindow.scrollTop - techChatWindow.clientHeight < NEAR_BOTTOM_PX;
+
+  techChatWindow.addEventListener('scroll', () => {
+    techScrollBottomBtn.classList.toggle('hidden', isNearBottom());
+  });
+
+  techScrollBottomBtn.addEventListener('click', () => {
+    techChatWindow.scrollTo({ top: techChatWindow.scrollHeight, behavior: 'smooth' });
+  });
+}
