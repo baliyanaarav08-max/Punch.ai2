@@ -80,6 +80,9 @@
       <div class="chat-search-row">
         <input type="text" id="chat-search-input" class="chat-search-input" placeholder="Search chats..." autocomplete="off" />
       </div>
+      <div id="streak-badge" class="streak-badge hidden">
+        <span id="streak-badge-text">🔥 1-day streak</span>
+      </div>
       <div id="chat-list" class="chat-list">
         <div class="chat-list-empty">Log in to see your saved chats</div>
       </div>
@@ -97,6 +100,10 @@
         <div id="clarify-options" class="clarify-options"></div>
       </div>
       <div id="chat-attach-preview" class="chat-attach-preview hidden"></div>
+      <div id="guest-banner" class="guest-banner hidden">
+        <span id="guest-banner-text">Trying Punch as a guest</span>
+        <button type="button" id="guest-banner-signup" class="guest-banner-signup">Create account</button>
+      </div>
       <form id="chat-form" class="chat-input-row">
         <input type="file" id="chat-attach-input" accept="image/*,video/*,.pdf,.doc,.docx,.txt" hidden multiple />
         <button type="button" id="chat-attach-btn" class="attach-btn" aria-label="Attach a file">
@@ -139,7 +146,7 @@
   <div class="punch-auth-card">
     <div class="punch-auth-header">
       <h2>Welcome to Punch</h2>
-      <p>Log in or create an account to start chatting</p>
+      <p id="punch-auth-subtext">Log in or create an account to start chatting</p>
     </div>
 
     <div class="punch-auth-tabs">
@@ -179,6 +186,11 @@
       </svg>
       Continue with Google
     </button>
+
+    <button type="button" id="punch-guest-btn" class="punch-auth-guest">
+      Continue as Guest
+    </button>
+    <p class="punch-auth-guest-note">Try a few messages free — no account needed yet</p>
   </div>
 </div>
 
@@ -248,6 +260,19 @@
         <span class="btn-label">Save</span>
       </button>
     </form>
+
+    <div class="customize-account-actions">
+      <button type="button" id="customize-logout-btn" class="customize-logout-btn">Log Out</button>
+      <button type="button" id="customize-delete-btn" class="customize-delete-btn">Delete Account</button>
+    </div>
+
+    <div id="delete-confirm-card" class="delete-confirm-card hidden">
+      <p>This permanently deletes your account, profile, and every saved chat. This can't be undone.</p>
+      <div class="delete-confirm-row">
+        <button type="button" id="delete-confirm-cancel" class="delete-confirm-cancel">Cancel</button>
+        <button type="button" id="delete-confirm-yes" class="delete-confirm-yes">Yes, delete everything</button>
+      </div>
+    </div>
   </div>
 </div>
 

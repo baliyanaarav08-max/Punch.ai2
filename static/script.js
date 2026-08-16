@@ -9,6 +9,7 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
   signOut,
+  deleteUser,
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
 import {
@@ -340,6 +341,57 @@ function clearProfileUI() {
   applyToneSelection(DEFAULT_TONE);
 }
 
+// -------------------------------------
+// Usage streak
+// -------------------------------------
+const streakBadge = document.getElementById("streak-badge");
+const streakBadgeText = document.getElementById("streak-badge-text");
+
+function todayDateStr() {
+  // Local calendar date (not UTC), so the streak lines up with the user's
+  // own day rather than flipping at UTC midnight.
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function updateStreakBadge(streak) {
+  if (!streakBadge) return;
+  if (!streak || streak < 1) {
+    streakBadge.classList.add("hidden");
+    return;
+  }
+  streakBadgeText.textContent = `🔥 ${streak}-day streak`;
+  streakBadge.classList.remove("hidden");
+}
+
+// Called once per login/page-load. Compares today's date against the
+// user's last-active date stored on their profile doc: same day = no
+// change, exactly one day later = streak continues (+1), anything else
+// (a gap, or the very first time) = streak resets to 1.
+async function syncStreak(uid) {
+  const today = todayDateStr();
+  try {
+    const ref = profileDocRef(uid);
+    const snap = await getDoc(ref);
+    const data = snap.exists() ? snap.data() : {};
+    const lastActive = data.lastActiveDate || null;
+    let streak = data.streak || 0;
+
+    if (lastActive === today) {
+      // Already counted today — just show the existing streak.
+    } else {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+      streak = lastActive === yesterdayStr ? streak + 1 : 1;
+      await setDoc(ref, { lastActiveDate: today, streak }, { merge: true });
+    }
+    updateStreakBadge(streak);
+  } catch (err) {
+    console.error("Failed to sync streak:", err);
+  }
+}
+
 function openCustomize() {
   if (!currentUser) {
     modal.classList.remove("hidden");
@@ -347,11 +399,13 @@ function openCustomize() {
   }
   fillCustomizeForm();
   customizeNote.classList.add("hidden");
+  if (deleteConfirmCard) deleteConfirmCard.classList.add("hidden");
   customizeOverlay.classList.remove("hidden");
 }
 
 function closeCustomize() {
   customizeOverlay.classList.add("hidden");
+  if (deleteConfirmCard) deleteConfirmCard.classList.add("hidden");
 }
 
 customizeBtn.addEventListener("click", openCustomize);
@@ -360,6 +414,83 @@ customizeOverlay.addEventListener("click", (e) => {
   if (e.target === customizeOverlay) closeCustomize();
 });
 profileCorner.addEventListener("click", openCustomize);
+
+// -------------------------------------
+// Account actions: Log Out / Delete Account
+// -------------------------------------
+const customizeLogoutBtn = document.getElementById("customize-logout-btn");
+const customizeDeleteBtn = document.getElementById("customize-delete-btn");
+const deleteConfirmCard = document.getElementById("delete-confirm-card");
+const deleteConfirmCancel = document.getElementById("delete-confirm-cancel");
+const deleteConfirmYes = document.getElementById("delete-confirm-yes");
+
+if (customizeLogoutBtn) {
+  customizeLogoutBtn.addEventListener("click", async () => {
+    closeCustomize();
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error(err);
+    }
+  });
+}
+
+if (customizeDeleteBtn) {
+  customizeDeleteBtn.addEventListener("click", () => {
+    deleteConfirmCard.classList.remove("hidden");
+  });
+}
+
+if (deleteConfirmCancel) {
+  deleteConfirmCancel.addEventListener("click", () => {
+    deleteConfirmCard.classList.add("hidden");
+  });
+}
+
+// Deletes every message in every chat, then every chat doc, then the
+// profile doc — Firestore's client SDK has no recursive delete, so this
+// walks the collections by hand. Attachment files left in Storage aren't
+// swept up here (would need a Cloud Function for a clean job); the account
+// and all its visible data are gone either way.
+async function deleteAllUserFirestoreData(uid) {
+  const chatsSnap = await getDocs(chatsCol(uid));
+  for (const chatDoc of chatsSnap.docs) {
+    const messagesSnap = await getDocs(messagesCol(uid, chatDoc.id));
+    for (const msgDoc of messagesSnap.docs) {
+      await deleteDoc(msgDoc.ref);
+    }
+    await deleteDoc(chatDoc.ref);
+  }
+  await deleteDoc(profileDocRef(uid));
+}
+
+if (deleteConfirmYes) {
+  deleteConfirmYes.addEventListener("click", async () => {
+    if (!currentUser) return;
+    deleteConfirmYes.disabled = true;
+    deleteConfirmYes.textContent = "Deleting...";
+    const uid = currentUser.uid;
+    try {
+      await deleteAllUserFirestoreData(uid);
+      await deleteUser(currentUser);
+      // onAuthStateChanged fires from here and resets the UI back to the
+      // logged-out state automatically.
+    } catch (err) {
+      console.error("Account deletion failed:", err);
+      if (err.code === "auth/requires-recent-login") {
+        customizeNote.textContent =
+          "For security, please log out and log back in, then try deleting your account again.";
+      } else {
+        customizeNote.textContent = "Something went wrong deleting your account. Please try again.";
+      }
+      customizeNote.classList.remove("hidden");
+      deleteConfirmCard.classList.add("hidden");
+    } finally {
+      deleteConfirmYes.disabled = false;
+      deleteConfirmYes.textContent = "Yes, delete everything";
+    }
+  });
+}
 
 customizePhotoBtn.addEventListener("click", () => {
   if (!currentUser) return;
@@ -469,6 +600,40 @@ let chatSearchTerm = "";
 const DEFAULT_GREETING =
   "Hey, I'm Punch. Ask me anything — I'll pull in live search results when a question needs current info.";
 
+const CHAT_STARTER_PROMPTS = [
+  "Explain quantum computing like I'm 12",
+  "Help me write a polite follow-up email",
+  "Plan a 3-day weekend trip on a budget",
+  "Summarize the biggest tech news this week",
+];
+
+// Shows a row of clickable example prompts under the empty-chat greeting —
+// removed the moment a real conversation starts (see removeStarterChips,
+// called at the top of sendChatMessage).
+function appendStarterChips(container) {
+  if (container.querySelector("#chat-starters")) return;
+  const wrap = document.createElement("div");
+  wrap.id = "chat-starters";
+  wrap.className = "chat-starters";
+  CHAT_STARTER_PROMPTS.forEach((prompt) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chat-starter-chip";
+    chip.textContent = prompt;
+    chip.addEventListener("click", () => {
+      chatInput.value = prompt;
+      chatForm.requestSubmit();
+    });
+    wrap.appendChild(chip);
+  });
+  container.appendChild(wrap);
+}
+
+function removeStarterChips(container) {
+  const existing = container.querySelector("#chat-starters");
+  if (existing) existing.remove();
+}
+
 if (chatSearchInput) {
   chatSearchInput.addEventListener("input", () => {
     chatSearchTerm = chatSearchInput.value;
@@ -487,6 +652,7 @@ function renderChatWindowFromHistory(history) {
   chatWindow.innerHTML = "";
   if (history.length === 0) {
     addMessage(chatWindow, DEFAULT_GREETING, "assistant");
+    appendStarterChips(chatWindow);
     return;
   }
   history.forEach((turn, idx) => {
@@ -523,6 +689,7 @@ async function loadChatMessages(uid, chatId) {
   chatWindow.innerHTML = "";
   if (displayMessages.length === 0) {
     addMessage(chatWindow, DEFAULT_GREETING, "assistant");
+    appendStarterChips(chatWindow);
   } else {
     displayMessages.forEach((m, idx) => {
       const div = addMessage(chatWindow, m.text, m.sender, m.attachments, idx);
@@ -1161,6 +1328,15 @@ function appendPdfDownloadCard(container, filename, base64Data, title) {
 
 async function sendChatMessage(message, attachmentOrList) {
   hideClarifyCard();
+
+  // Guest mode: block sending once the free-message limit is hit, and send
+  // them back to the signup overlay instead of quietly failing the request.
+  if (isGuestSession && getGuestMessageCount() >= GUEST_MESSAGE_LIMIT) {
+    promptSignupFromGuest("You've used your 4 free messages — create an account to keep chatting");
+    return;
+  }
+
+  removeStarterChips(chatWindow);
   chatInput.disabled = true;
   chatAttachBtn.disabled = true;
   const isFirstMessage = chatHistory.length === 0;
@@ -1238,6 +1414,11 @@ async function sendChatMessage(message, attachmentOrList) {
       chatHistory.push({ role: "model", parts: [{ text: data.question }] });
       showClarifyCard(data.question, data.options || []);
 
+      if (isGuestSession) {
+        incrementGuestMessageCount();
+        updateGuestBanner();
+      }
+
       if (currentUser && currentChatId) {
         saveMessagePair(currentUser.uid, currentChatId, message, data.question, isFirstMessage, null).catch(
           (err) => console.error("Failed to save chat:", err),
@@ -1261,6 +1442,11 @@ async function sendChatMessage(message, attachmentOrList) {
       );
       appendPdfDownloadCard(chatWindow, data.filename, data.data, data.title);
 
+      if (isGuestSession) {
+        incrementGuestMessageCount();
+        updateGuestBanner();
+      }
+
       if (currentUser && currentChatId) {
         saveMessagePair(currentUser.uid, currentChatId, message, data.reply, isFirstMessage, null)
           .then((modelDocId) => {
@@ -1275,6 +1461,11 @@ async function sendChatMessage(message, attachmentOrList) {
 
     const assistantIndex = userIndex + 1;
     const assistantDiv = await typeMessage(chatWindow, data.reply, assistantIndex, data.provider);
+
+    if (isGuestSession) {
+      incrementGuestMessageCount();
+      updateGuestBanner();
+    }
 
     if (currentUser && currentChatId) {
       (async () => {
@@ -1703,6 +1894,8 @@ const googleBtn = document.getElementById("punch-google-btn");
 
 const authError = document.getElementById("punch-auth-error");
 
+const authSubtext = document.getElementById("punch-auth-subtext");
+
 let loginMode = true;
 
 function showAuthError(message) {
@@ -1718,19 +1911,94 @@ function clearAuthError() {
 }
 
 // -------------------------------------
+// Guest mode
+// -------------------------------------
+// Lets someone try Punch without creating an account first. Capped at
+// GUEST_MESSAGE_LIMIT messages (tracked in localStorage, since there's no
+// account to attach it to) — after that, sending is blocked and the auth
+// overlay reopens with a "create an account to continue" note. This is a
+// soft, client-side limit for lowering signup friction, not a security
+// boundary — someone could clear localStorage to reset it, which is an
+// acceptable tradeoff for a friendlier onboarding flow.
+const GUEST_MESSAGE_LIMIT = 4;
+const GUEST_COUNT_KEY = "punchGuestMessageCount";
+let isGuestSession = false;
+
+const guestBtn = document.getElementById("punch-guest-btn");
+const guestBanner = document.getElementById("guest-banner");
+const guestBannerText = document.getElementById("guest-banner-text");
+const guestBannerSignup = document.getElementById("guest-banner-signup");
+
+function getGuestMessageCount() {
+  return parseInt(localStorage.getItem(GUEST_COUNT_KEY) || "0", 10);
+}
+
+function incrementGuestMessageCount() {
+  const next = getGuestMessageCount() + 1;
+  localStorage.setItem(GUEST_COUNT_KEY, String(next));
+  return next;
+}
+
+function updateGuestBanner() {
+  if (!guestBanner) return;
+  if (!isGuestSession) {
+    guestBanner.classList.add("hidden");
+    return;
+  }
+  const used = getGuestMessageCount();
+  const left = Math.max(0, GUEST_MESSAGE_LIMIT - used);
+  guestBannerText.textContent =
+    left > 0
+      ? `Guest mode — ${left} free message${left === 1 ? "" : "s"} left`
+      : "Guest mode — free messages used up";
+  guestBanner.classList.remove("hidden");
+}
+
+// Reopens the login/signup overlay, optionally with a specific note (used
+// both for the "guest limit reached" case and the plain "Continue as Guest"
+// exit path).
+function promptSignupFromGuest(note) {
+  isGuestSession = false;
+  updateGuestBanner();
+  if (authSubtext) authSubtext.textContent = note || "Create an account to keep chatting";
+  modal.classList.remove("hidden");
+}
+
+if (guestBtn) {
+  guestBtn.addEventListener("click", () => {
+    isGuestSession = true;
+    modal.classList.add("hidden");
+    chatWindow.innerHTML = "";
+    addMessage(chatWindow, DEFAULT_GREETING, "assistant");
+    appendStarterChips(chatWindow);
+    chatListEl.innerHTML = '<div class="chat-list-empty">Create an account to save your chats</div>';
+    updateGuestBanner();
+  });
+}
+
+if (guestBannerSignup) {
+  guestBannerSignup.addEventListener("click", () => {
+    promptSignupFromGuest("Create an account to keep chatting and save your history");
+  });
+}
+
+// -------------------------------------
 // Authentication State
 // -------------------------------------
 
 onAuthStateChanged(auth, (user) => {
   if (user) {
     modal.classList.add("hidden");
+    isGuestSession = false;
+    updateGuestBanner();
     currentUser = user;
     watchChatList(user.uid);
     loadProfile(user.uid);
+    syncStreak(user.uid);
 
     console.log("Logged in:", user.email);
   } else {
-    modal.classList.remove("hidden");
+    if (!isGuestSession) modal.classList.remove("hidden");
 
     // Reset all chat state on logout so nothing leaks into the next session.
     currentUser = null;
@@ -1744,11 +2012,15 @@ onAuthStateChanged(auth, (user) => {
       unsubscribeChatList = null;
     }
     chatWindow.innerHTML = `<div class="msg assistant">${DEFAULT_GREETING}</div>`;
+    appendStarterChips(chatWindow);
     chatListEl.innerHTML = '<div class="chat-list-empty">Log in to see your saved chats</div>';
     clearProfileUI();
     closeCustomize();
     stopSpeaking();
     hideClarifyCard();
+    isGuestSession = false;
+    updateGuestBanner();
+    updateStreakBadge(null);
 
     console.log("User not logged in");
   }

@@ -127,6 +127,13 @@ def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=F
         "said. When a PDF or video is attached, actually use its content in your answer "
         "instead of saying you can't view attachments."
     )
+    base += (
+        " If the user attaches an image that contains handwriting (a handwritten note, "
+        "journal page, whiteboard, or similar), transcribe it into clean typed text as part "
+        "of your answer — don't just describe that it's handwritten. If it's not already "
+        "obvious what they want, briefly offer to also clean it up, summarize it, or turn it "
+        "into a structured document (e.g. a PDF) for them."
+    )
     if profile:
         name = (profile.get("name") or "").strip()
         hobby = (profile.get("hobby") or "").strip()
