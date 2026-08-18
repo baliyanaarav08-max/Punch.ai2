@@ -4,7 +4,9 @@
 import { auth, db } from "./firebase.js";
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-import { load as loadCashfree } from "https://sdk.cashfree.com/js/v3/cashfree.js";
+// Cashfree's SDK is loaded as a plain <script> tag in pricing.html (it's a
+// UMD build, not an ES module), which exposes a global `Cashfree(...)`
+// function — see getCashfree() below.
 
 const upgradeBtn = document.getElementById("upgrade-btn");
 const pricingNote = document.getElementById("pricing-note");
@@ -25,12 +27,13 @@ function markAsAlreadyPro() {
   setNote("Thanks for being a Punch Pro member!", "success");
 }
 
-async function getCashfree(mode) {
-  // The SDK is tied to a mode (sandbox/production) at load time, so if the
-  // server ever reports a different mode than what we last loaded, reload it.
+function getCashfree(mode) {
+  // The SDK is tied to a mode (sandbox/production) at init time, so if the
+  // server ever reports a different mode than what we last initialized,
+  // re-initialize it.
   if (!cashfreeInstance || cashfreeMode !== mode) {
     cashfreeMode = mode;
-    cashfreeInstance = await loadCashfree({ mode });
+    cashfreeInstance = Cashfree({ mode });
   }
   return cashfreeInstance;
 }
