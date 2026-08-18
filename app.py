@@ -19,6 +19,14 @@ try:
 except ImportError:  # pragma: no cover - surfaced clearly at request time instead
     FPDF = None
 
+try:
+    import firebase_admin
+    from firebase_admin import credentials as fb_credentials, auth as fb_auth, firestore as fb_firestore
+except ImportError:  # pragma: no cover - surfaced clearly at request time instead
+    firebase_admin = None
+    fb_auth = None
+    fb_firestore = None
+
 app = Flask(__name__)
 
 # --- Gemini (Google AI Studio) ---
@@ -28,12 +36,12 @@ GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_M
 
 # --- Groq (backup AI, used only if Gemini fails) ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # --- Cerebras (second backup AI, free, used only if both Gemini and Groq fail) ---
 CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY")
-CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "llama-3.3-70b")
+CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "gpt-oss-120b")
 CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"
 
 # --- SearchAPI.io (real-time Google search) ---
@@ -46,6 +54,147 @@ ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "OtEfb2LVzIE45wdYe54
 ELEVENLABS_URL = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
 
 ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Punch")
+
+# --- Firebase Admin (server-side auth verification + authoritative plan/limit data) ---
+# Needed so "free vs Pro" and the daily message cap can't just be spoofed by
+# editing the request body in devtools — the server independently looks up
+# the real plan from Firestore using a verified Firebase ID token, rather
+# than trusting whatever the client claims. Paste the *service account*
+# JSON (Firebase Console -> Project Settings -> Service Accounts -> Generate
+# new private key) into FIREBASE_SERVICE_ACCOUNT_JSON as a single-line env
+# var, or point FIREBASE_SERVICE_ACCOUNT_PATH at a mounted file instead.
+_fb_admin_app = None
+_fb_db = None
+if firebase_admin is not None:
+    try:
+        service_account_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+        service_account_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_PATH")
+        if service_account_json:
+            cred = fb_credentials.Certificate(json.loads(service_account_json))
+            _fb_admin_app = firebase_admin.initialize_app(cred)
+        elif service_account_path:
+            cred = fb_credentials.Certificate(service_account_path)
+            _fb_admin_app = firebase_admin.initialize_app(cred)
+    except Exception as e:  # pragma: no cover - surfaced clearly at request time instead
+        print(f"[Punch] Firebase Admin not initialized: {e}")
+if _fb_admin_app is not None:
+    _fb_db = fb_firestore.client()
+
+# --- Cashfree (Punch Pro payments) ---
+# Cashfree's Orders API is plain REST, so it's called directly with
+# `requests` instead of pulling in another SDK. Get your keys from
+# Cashfree Dashboard -> Developers -> API Keys (separate keys for the
+# Sandbox and Production tabs). Set CASHFREE_ENV to "production" when
+# you're ready to take real payments; it defaults to "sandbox" so nothing
+# accidentally goes live before it's meant to.
+CASHFREE_APP_ID = os.environ.get("CASHFREE_APP_ID")
+CASHFREE_SECRET_KEY = os.environ.get("CASHFREE_SECRET_KEY")
+CASHFREE_ENV = os.environ.get("CASHFREE_ENV", "sandbox").strip().lower()
+CASHFREE_API_VERSION = "2023-08-01"
+CASHFREE_BASE_URL = (
+    "https://api.cashfree.com/pg"
+    if CASHFREE_ENV == "production"
+    else "https://sandbox.cashfree.com/pg"
+)
+PRO_PRICE_INR = int(os.environ.get("CASHFREE_PRO_PRICE_INR", "199"))
+CASHFREE_CONFIGURED = bool(CASHFREE_APP_ID and CASHFREE_SECRET_KEY)
+
+
+def _cashfree_headers():
+    return {
+        "x-client-id": CASHFREE_APP_ID,
+        "x-client-secret": CASHFREE_SECRET_KEY,
+        "x-api-version": CASHFREE_API_VERSION,
+        "Content-Type": "application/json",
+    }
+
+
+FREE_DAILY_MESSAGE_LIMIT = 20
+
+
+def verify_request_uid():
+    """Pulls a Firebase ID token from the Authorization: Bearer header and
+    verifies it server-side. Returns the uid on success, or None if there's
+    no token, it's invalid, or Firebase Admin isn't configured — callers
+    should treat None as "anonymous/unverified" and fall back to free-tier,
+    unauthenticated behavior rather than erroring out, since large parts of
+    Punch (guest mode, etc.) intentionally work without an account."""
+    if fb_auth is None:
+        return None
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None
+    token = header[7:].strip()
+    if not token:
+        return None
+    try:
+        decoded = fb_auth.verify_id_token(token)
+        return decoded.get("uid")
+    except Exception:
+        return None
+
+
+def verify_request_token_with_contact():
+    """Same verification as verify_request_uid, but also returns whatever
+    email/phone the Firebase ID token itself carries, so Cashfree's
+    (mandatory) customer_details can be prefilled without a separate
+    Firestore round trip. Returns (uid, email, phone) — uid is None if the
+    token is missing/invalid; email/phone may be None even for a valid
+    token depending on how the user signed in."""
+    if fb_auth is None:
+        return None, None, None
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None, None, None
+    token = header[7:].strip()
+    if not token:
+        return None, None, None
+    try:
+        decoded = fb_auth.verify_id_token(token)
+    except Exception:
+        return None, None, None
+    return decoded.get("uid"), decoded.get("email"), decoded.get("phone_number")
+
+
+def get_user_plan_and_usage(uid):
+    """Authoritative (server-side) lookup of a user's plan and today's
+    message count, straight from Firestore — never trusts the client's own
+    claim about its plan. Returns (plan, message_count_today). Missing
+    profile / Admin SDK not configured both degrade to ("free", 0) rather
+    than blocking the request outright."""
+    if _fb_db is None or not uid:
+        return "free", 0
+    try:
+        snap = _fb_db.collection("users").document(uid).get()
+        data = snap.to_dict() or {}
+        plan = data.get("plan") or "free"
+        today = time.strftime("%Y-%m-%d")
+        count = data.get("dailyMessageCount") or 0
+        if (data.get("dailyMessageDate") or "") != today:
+            count = 0
+        return plan, count
+    except Exception as e:
+        print(f"[Punch] Failed to read plan/usage for {uid}: {e}")
+        return "free", 0
+
+
+def increment_daily_message_count(uid):
+    """Best-effort — a failed write here shouldn't fail the chat request
+    that already succeeded, it just means the count might undercount by
+    one for this user today."""
+    if _fb_db is None or not uid:
+        return
+    try:
+        today = time.strftime("%Y-%m-%d")
+        ref = _fb_db.collection("users").document(uid)
+        snap = ref.get()
+        data = snap.to_dict() or {}
+        count = data.get("dailyMessageCount") or 0
+        if (data.get("dailyMessageDate") or "") != today:
+            count = 0
+        ref.set({"dailyMessageCount": count + 1, "dailyMessageDate": today}, merge=True)
+    except Exception as e:
+        print(f"[Punch] Failed to increment daily count for {uid}: {e}")
 
 # Base64-encoded attachment data is ~33% larger than the original file, so
 # cap the encoded string length to keep well under typical request-size
@@ -102,7 +251,14 @@ def web_search(query, num=4):
         return None
 
 
-def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=False, allow_pdf_generation=False):
+def build_system_prompt(
+    voice_mode,
+    context_block,
+    profile=None,
+    allow_clarify=False,
+    allow_pdf_generation=False,
+    pdf_pro_gated=False,
+):
     base = (
         f"You are {ASSISTANT_NAME}, a helpful, knowledgeable AI assistant. "
         f"Give thorough, specific, well-reasoned answers — include concrete facts, names, "
@@ -238,6 +394,14 @@ def build_system_prompt(voice_mode, context_block, profile=None, allow_clarify=F
             "instead of spelling out every single day in full detail, so the whole document "
             "fits comfortably in one reply."
         )
+    elif pdf_pro_gated:
+        base += (
+            "\n\nPDF export is a Punch Pro feature and isn't available on the free plan. If "
+            "the user asks you to generate/export/create a downloadable PDF, don't attempt "
+            "it — instead let them know PDF export is a Punch Pro feature and they can "
+            "upgrade on the Pricing page, then still help with whatever the underlying "
+            "content/question was as a normal chat answer."
+        )
     if context_block:
         base += (
             "\n\nHere are real-time web search results relevant to the user's question:\n"
@@ -252,12 +416,26 @@ def build_tech_system_prompt(context_block):
         f"You are {ASSISTANT_NAME}'s Tech Desk — a specialized assistant focused ONLY on "
         f"technology: tech news, new product launches, and recommendations for laptops, "
         f"mobile phones, and smartwatches. Give specific model names, approximate current "
-        f"prices, and key specs when recommending anything. Compare options clearly when "
-        f"asked (e.g. pros/cons, price-to-performance). If asked about something unrelated "
-        f"to tech, gently redirect the conversation back to tech news or product advice. "
-        f"ALWAYS quote prices in Indian Rupees (₹), using Indian market pricing — never "
-        f"dollars. If a search result only gives a price in another currency, convert it "
-        f"to an approximate ₹ figure and say it's approximate."
+        f"prices, and key specs when recommending anything. If asked about something "
+        f"unrelated to tech, gently redirect the conversation back to tech news or product "
+        f"advice. ALWAYS quote prices in Indian Rupees (₹), using Indian market pricing — "
+        f"never dollars. If a search result only gives a price in another currency, convert "
+        f"it to an approximate ₹ figure and say it's approximate."
+    )
+    base += (
+        "\n\nIf — and only if — the user is directly comparing 2 or 3 specific named "
+        "products (e.g. \"iPhone 16 vs Galaxy S25\", \"compare these three laptops\"), "
+        "respond with ONLY a single JSON object and nothing else before or after it, in "
+        'exactly this shape: {"comparison_table": true, "intro": "<one short sentence '
+        'introducing the comparison>", "products": [{"name": "<product name>", "price": '
+        '"<₹ price>", "specs": {"<spec label>": "<value>", ...}}, ...], "verdict": "<one or '
+        'two sentence recommendation>"} — use the SAME spec labels (2 to 6 of them, e.g. '
+        '"Display", "Chip", "Battery", "Camera") across every product in the list so the '
+        "table lines up, and use real current specs/prices from the search results above, "
+        "not placeholders. Do not wrap it in markdown code fences.\n\n"
+        "Otherwise — for a single product recommendation, general tech news, or anything "
+        "that isn't a direct multi-product comparison — ignore this and just answer "
+        "normally in plain text with specific model names and prices inline."
     )
     if context_block:
         base += (
@@ -266,6 +444,37 @@ def build_tech_system_prompt(context_block):
             f"outdated for recently launched products:\n{context_block}"
         )
     return base
+
+
+def parse_comparison_table_reply(reply_text):
+    """If the Tech Desk's reply is a comparison-table JSON directive (see
+    build_tech_system_prompt), parse and return it. Returns None for a
+    normal text reply — including one that failed to parse, so the caller
+    just falls back to showing the raw text rather than erroring out."""
+    if not reply_text:
+        return None
+    candidate = reply_text.strip()
+    if candidate.startswith("```"):
+        candidate = candidate.strip("`")
+        if candidate.lower().startswith("json"):
+            candidate = candidate[4:]
+        candidate = candidate.strip()
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or parsed.get("comparison_table") is not True:
+        return None
+    products = parsed.get("products")
+    if not isinstance(products, list) or len(products) < 2:
+        return None
+    return {
+        "intro": str(parsed.get("intro") or "").strip(),
+        "products": products,
+        "verdict": str(parsed.get("verdict") or "").strip(),
+    }
 
 
 def extract_youtube_urls(text):
@@ -646,6 +855,16 @@ def tech_chat():
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
+    comparison = parse_comparison_table_reply(reply)
+    if comparison:
+        return jsonify(
+            {
+                "reply": comparison["intro"] or "Here's how they compare:",
+                "comparison": comparison,
+                "provider": provider,
+            }
+        )
+
     return jsonify({"reply": reply, "provider": provider})
 
 
@@ -670,13 +889,32 @@ def chat():
         if att.get("data") and len(att["data"]) > MAX_ATTACHMENT_B64_CHARS:
             return jsonify({"error": "One of those files is too large — please use something under ~18 MB."}), 413
 
+    # Server-side plan + daily-limit check. Guests/unauthenticated requests
+    # (no valid ID token) aren't touched here — that's guest mode's own
+    # client-side 4-message cap, a separate and much smaller limit.
+    uid = verify_request_uid()
+    plan = "free"
+    if uid:
+        plan, used_today = get_user_plan_and_usage(uid)
+        if plan != "pro" and used_today >= FREE_DAILY_MESSAGE_LIMIT:
+            return jsonify(
+                {
+                    "error": "daily_limit",
+                    "message": (
+                        f"You've used all {FREE_DAILY_MESSAGE_LIMIT} free messages for today. "
+                        "Upgrade to Punch Pro for unlimited messages, or come back tomorrow."
+                    ),
+                }
+            ), 403
+
     context_block = web_search(message) if message and needs_search(message) else None
     system_prompt = build_system_prompt(
         voice_mode=False,
         context_block=context_block,
         profile=profile,
         allow_clarify=True,
-        allow_pdf_generation=True,
+        allow_pdf_generation=(plan == "pro"),
+        pdf_pro_gated=(plan != "pro"),
     )
 
     user_parts = build_user_parts(message, attachments)
@@ -695,6 +933,9 @@ def chat():
         reply, provider = get_ai_reply(system_prompt, contents, max_tokens=8192, contents_fallback=contents_fallback)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
+
+    if uid and plan != "pro":
+        increment_daily_message_count(uid)
 
     clarify_payload = parse_clarify_reply(reply)
     if clarify_payload:
@@ -794,6 +1035,222 @@ def voice_chat():
         return jsonify({"reply": reply, "audio_base64": None, "tts_error": str(e)})
 
     return jsonify({"reply": reply, "audio_base64": audio_b64})
+
+
+@app.route("/pricing")
+def pricing():
+    return render_template(
+        "pricing.html",
+        assistant_name=ASSISTANT_NAME,
+        pro_price=PRO_PRICE_INR,
+    )
+
+
+@app.route("/api/create_order", methods=["POST"])
+def create_order():
+    """Starts a Punch Pro upgrade purchase. Requires the caller to be signed
+    in — anonymous/guest checkout is intentionally not supported since the
+    Pro flag has to attach to a real account."""
+    uid, email, phone = verify_request_token_with_contact()
+    if not uid:
+        return jsonify({"error": "Please log in before upgrading to Pro."}), 401
+    if not CASHFREE_CONFIGURED:
+        return jsonify({"error": "Payments aren't configured on this server yet."}), 500
+
+    order_id = f"punch_pro_{uid[:16]}_{int(time.time())}"
+    payload = {
+        "order_id": order_id,
+        "order_amount": PRO_PRICE_INR,
+        "order_currency": "INR",
+        "customer_details": {
+            "customer_id": uid,
+            # Cashfree requires both fields; not every sign-in method
+            # (e.g. Google without phone) hands us a real phone number,
+            # so fall back to a placeholder rather than failing checkout.
+            "customer_email": email or f"{uid}@punch.ai",
+            "customer_phone": phone or "9999999999",
+        },
+        "order_meta": {
+            "return_url": request.url_root.rstrip("/") + "/pricing",
+        },
+        "order_note": "punch_pro_monthly",
+    }
+
+    try:
+        resp = requests.post(
+            f"{CASHFREE_BASE_URL}/orders",
+            headers=_cashfree_headers(),
+            json=payload,
+            timeout=30,
+        )
+        order = resp.json()
+        if resp.status_code >= 400:
+            raise Exception(order.get("message", "Could not start checkout"))
+    except Exception as e:
+        return jsonify({"error": f"Could not start checkout: {e}"}), 500
+
+    return jsonify(
+        {
+            "order_id": order_id,
+            "payment_session_id": order.get("payment_session_id"),
+            "mode": CASHFREE_ENV,
+        }
+    )
+
+
+@app.route("/api/verify_payment", methods=["POST"])
+def verify_payment():
+    """Verifies a completed Cashfree checkout and — only once Cashfree
+    itself confirms the order as paid, for this same signed-in user — marks
+    the account as Pro server-side. This is the step that actually grants
+    Pro; nothing on the client can set that flag on its own, since
+    Firestore rules should restrict writes to the 'plan' field to
+    server/Admin SDK access only."""
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in before upgrading to Pro."}), 401
+    if not CASHFREE_CONFIGURED:
+        return jsonify({"error": "Payments aren't configured on this server yet."}), 500
+
+    data = request.get_json(force=True)
+    order_id = (data or {}).get("order_id")
+    if not order_id:
+        return jsonify({"error": "Missing order id"}), 400
+
+    try:
+        resp = requests.get(
+            f"{CASHFREE_BASE_URL}/orders/{order_id}",
+            headers=_cashfree_headers(),
+            timeout=30,
+        )
+        order_data = resp.json()
+        if resp.status_code >= 400:
+            raise Exception(order_data.get("message", "Could not verify payment"))
+    except Exception as e:
+        return jsonify({"error": f"Payment could not be verified: {e}"}), 400
+
+    # Never trust the client's own claim of success — check Cashfree's
+    # order status directly, and make sure the order actually belongs to
+    # the signed-in user before granting Pro.
+    order_customer_id = (order_data.get("customer_details") or {}).get("customer_id")
+    if order_customer_id != uid:
+        return jsonify({"error": "Payment could not be verified"}), 400
+    if order_data.get("order_status") != "PAID":
+        return jsonify({"error": "Payment not completed yet"}), 400
+
+    if _fb_db is not None:
+        try:
+            _fb_db.collection("users").document(uid).set(
+                {"plan": "pro", "proSince": fb_firestore.SERVER_TIMESTAMP}, merge=True
+            )
+        except Exception as e:
+            return jsonify({"error": f"Payment succeeded but activating Pro failed: {e}"}), 500
+
+    return jsonify({"success": True})
+
+
+# --- Tech Desk price-drop watchlist (Punch Pro feature) ---
+# Storage + a manual re-check endpoint. Automatically re-checking on a
+# schedule (rather than only when the user asks) needs a periodic job —
+# e.g. your host's cron feature, or GitHub Actions on a schedule — hitting
+# POST /api/watchlist/check_all. That's a platform-level setup step outside
+# what this Flask app can do for itself on most free hosting tiers.
+@app.route("/api/watchlist/add", methods=["POST"])
+def watchlist_add():
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to use price watching."}), 401
+    plan, _ = get_user_plan_and_usage(uid)
+    if plan != "pro":
+        return jsonify({"error": "Price watching is a Punch Pro feature. Upgrade to unlock it."}), 403
+    if _fb_db is None:
+        return jsonify({"error": "This feature isn't configured on this server yet."}), 500
+
+    data = request.get_json(force=True)
+    product_name = (data.get("productName") or "").strip()
+    target_price = data.get("targetPrice")
+    if not product_name or not isinstance(target_price, (int, float)):
+        return jsonify({"error": "Missing product name or target price"}), 400
+
+    doc_ref = _fb_db.collection("users").document(uid).collection("watchlist").document()
+    doc_ref.set(
+        {
+            "productName": product_name,
+            "targetPrice": target_price,
+            "lastCheckedPrice": None,
+            "createdAt": fb_firestore.SERVER_TIMESTAMP,
+        }
+    )
+    return jsonify({"success": True, "id": doc_ref.id})
+
+
+@app.route("/api/watchlist/list", methods=["GET"])
+def watchlist_list():
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to use price watching."}), 401
+    if _fb_db is None:
+        return jsonify({"items": []})
+    items = []
+    for doc in _fb_db.collection("users").document(uid).collection("watchlist").stream():
+        item = doc.to_dict()
+        item["id"] = doc.id
+        items.append(item)
+    return jsonify({"items": items})
+
+
+@app.route("/api/watchlist/remove", methods=["POST"])
+def watchlist_remove():
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to use price watching."}), 401
+    if _fb_db is None:
+        return jsonify({"error": "This feature isn't configured on this server yet."}), 500
+    item_id = (request.get_json(force=True).get("id") or "").strip()
+    if not item_id:
+        return jsonify({"error": "Missing item id"}), 400
+    _fb_db.collection("users").document(uid).collection("watchlist").document(item_id).delete()
+    return jsonify({"success": True})
+
+
+def _check_one_watch_item(item_text):
+    """Runs a live search for a watched product and tries to pull a ₹ price
+    out of the results. This is a best-effort text scrape of search
+    snippets, not a real price API — it can miss or misread a price
+    depending on how the source page is written, so treat it as a rough
+    signal rather than a guaranteed-accurate feed."""
+    results = web_search(f"{item_text} price in India")
+    if not results:
+        return None
+    match = re.search(r"₹\s?([\d,]+)", results)
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+@app.route("/api/watchlist/check_all", methods=["POST"])
+def watchlist_check_all():
+    """Re-checks every watched item for every user and updates
+    lastCheckedPrice. Intended to be called by an external scheduler (see
+    the module-level comment above) — it doesn't send any notification
+    itself yet (no email/push wiring in this app), it just refreshes the
+    stored price so the Tech Desk UI shows current numbers next time the
+    user looks at their watchlist."""
+    if _fb_db is None:
+        return jsonify({"error": "This feature isn't configured on this server yet."}), 500
+    checked = 0
+    for user_doc in _fb_db.collection("users").stream():
+        watch_ref = user_doc.reference.collection("watchlist")
+        for item_doc in watch_ref.stream():
+            item = item_doc.to_dict()
+            price = _check_one_watch_item(item.get("productName", ""))
+            if price is not None:
+                item_doc.reference.set({"lastCheckedPrice": price}, merge=True)
+                checked += 1
+    return jsonify({"checked": checked})
 
 
 if __name__ == "__main__":

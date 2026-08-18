@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>{{ assistant_name }} Pricing — Free vs Pro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="logo">
+    <span class="logo-mark"></span>
+    {{ assistant_name }} <span class="tech-badge">Pricing</span>
+  </div>
+  <div class="nav-links">
+    <a href="/">Home</a>
+    <a href="/#chat">Chat</a>
+    <a href="/tech">Tech</a>
+    <a href="/pricing" class="nav-active">Pricing</a>
+  </div>
+  <a href="/" class="btn-ghost">← Back Home</a>
+</nav>
+
+<section class="hero pricing-hero">
+  <div class="hero-text">
+    <span class="eyebrow">Simple, honest pricing</span>
+    <h1>Free to start.<br>Upgrade when you need more.</h1>
+    <p class="hero-sub">{{ assistant_name }} is free for everyday questions. Punch Pro removes the daily limit and unlocks a few extra things power users tend to want.</p>
+  </div>
+</section>
+
+<section class="panel-section">
+  <div class="pricing-grid">
+    <div class="pricing-card">
+      <div class="pricing-card-head">
+        <h2>Free</h2>
+        <div class="pricing-price"><span class="pricing-amount">₹0</span><span class="pricing-period">/forever</span></div>
+        <p class="pricing-tagline">Everything you need for everyday use</p>
+      </div>
+      <ul class="pricing-features">
+        <li>20 messages per day</li>
+        <li>Live web search &amp; Tech Desk pricing</li>
+        <li>Image, video &amp; PDF understanding</li>
+        <li>Voice mode</li>
+        <li>Chat history &amp; profile customization</li>
+      </ul>
+      <button type="button" class="pricing-cta pricing-cta-ghost" disabled>Your current plan</button>
+    </div>
+
+    <div class="pricing-card pricing-card-pro">
+      <div class="pricing-badge">Most popular</div>
+      <div class="pricing-card-head">
+        <h2>Punch Pro</h2>
+        <div class="pricing-price"><span class="pricing-amount">₹{{ pro_price }}</span><span class="pricing-period">/month</span></div>
+        <p class="pricing-tagline">For daily power users</p>
+      </div>
+      <ul class="pricing-features">
+        <li><strong>Unlimited</strong> messages, every day</li>
+        <li>Generate downloadable <strong>PDF documents</strong></li>
+        <li>Tech Desk <strong>price-drop watchlist</strong></li>
+        <li>Everything in Free</li>
+        <li>Priority support</li>
+      </ul>
+      <button type="button" id="upgrade-btn" class="pricing-cta">Upgrade to Pro</button>
+      <p id="pricing-note" class="pricing-note"></p>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <span>Punch — simple pricing, no surprises.</span>
+</footer>
+
+<script type="module" src="{{ url_for('static', filename='pricing.js') }}"></script>
+</body>
+</html>

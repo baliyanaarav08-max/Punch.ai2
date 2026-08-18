@@ -19,7 +19,8 @@
     <a href="/">Home</a>
     <a href="/#chat">Chat</a>
     <a href="/#voice">Voice</a>
-    <a href="/tech">Tech</a>
+    <a href="/tech" class="nav-active">Tech</a>
+    <a href="/pricing">Pricing</a>
   </div>
   <a href="/" class="btn-ghost">← Back Home</a>
 </nav>
@@ -39,6 +40,26 @@
 </section>
 
 <section class="panel-section">
+  <div id="watchlist-section" class="watchlist-section">
+    <div class="watchlist-header">
+      <h3>📈 Price Watchlist <span class="tech-badge">Pro</span></h3>
+      <button type="button" id="watchlist-toggle" class="watchlist-toggle">Show</button>
+    </div>
+    <div id="watchlist-body" class="watchlist-body hidden">
+      <p id="watchlist-locked-note" class="watchlist-locked-note hidden">
+        Get notified when a product's price drops — <a href="/pricing">upgrade to Punch Pro</a> to unlock this.
+      </p>
+      <div id="watchlist-unlocked" class="hidden">
+        <form id="watchlist-add-form" class="watchlist-add-form">
+          <input id="watchlist-product-input" type="text" placeholder="Product name (e.g. MacBook Air M2)" autocomplete="off" />
+          <input id="watchlist-price-input" type="number" min="1" placeholder="Target price ₹" autocomplete="off" />
+          <button type="submit">Watch</button>
+        </form>
+        <div id="watchlist-items" class="watchlist-items"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="chat-card tech-chat-card">
     <div id="tech-chat-window" class="chat-window">
       <div class="msg assistant">Hey, I'm your Tech Desk. Ask me about the latest tech news, or tell me your budget and needs and I'll recommend a laptop, phone, or smartwatch with real current prices.</div>
@@ -59,6 +80,6 @@
   <span>Punch Tech Desk — real prices, real specs, no guesswork.</span>
 </footer>
 
-<script src="{{ url_for('static', filename='tech.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='tech.js') }}"></script>
 </body>
 </html>

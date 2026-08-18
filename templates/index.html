@@ -30,8 +30,10 @@
     <a href="#home">Home</a>
     <a href="#chat">Chat</a>
     <a href="#voice">Voice</a>
+    <a href="/pricing">Pricing</a>
   </div>
   <div class="nav-right">
+    <div id="plan-badge" class="plan-badge hidden">Pro</div>
     <div id="profile-corner" class="profile-corner hidden">
       <img id="profile-avatar" class="profile-avatar" src="" alt="Your photo" />
     </div>
@@ -103,6 +105,10 @@
       <div id="guest-banner" class="guest-banner hidden">
         <span id="guest-banner-text">Trying Punch as a guest</span>
         <button type="button" id="guest-banner-signup" class="guest-banner-signup">Create account</button>
+      </div>
+      <div id="limit-banner" class="guest-banner hidden">
+        <span id="limit-banner-text">You've used your free messages for today</span>
+        <a href="/pricing" class="guest-banner-signup">Upgrade to Pro</a>
       </div>
       <form id="chat-form" class="chat-input-row">
         <input type="file" id="chat-attach-input" accept="image/*,video/*,.pdf,.doc,.docx,.txt" hidden multiple />

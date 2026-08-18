@@ -332,6 +332,7 @@ async function loadProfile(uid) {
   profileCorner.classList.remove("hidden");
   applyAvatar(userProfile.photoURL);
   fillCustomizeForm();
+  updatePlanBadge(userProfile.plan);
 }
 
 function clearProfileUI() {
@@ -339,6 +340,7 @@ function clearProfileUI() {
   profileCorner.classList.add("hidden");
   applyAvatar("");
   applyToneSelection(DEFAULT_TONE);
+  updatePlanBadge(null);
 }
 
 // -------------------------------------
@@ -1337,6 +1339,7 @@ async function sendChatMessage(message, attachmentOrList) {
   }
 
   removeStarterChips(chatWindow);
+  hideLimitBanner();
   chatInput.disabled = true;
   chatAttachBtn.disabled = true;
   const isFirstMessage = chatHistory.length === 0;
@@ -1375,11 +1378,22 @@ async function sendChatMessage(message, attachmentOrList) {
       })),
     );
 
+    // Attach a verified Firebase ID token when signed in, so the server can
+    // authoritatively check the account's real plan/daily-usage rather than
+    // trusting anything the client claims — logged-out/guest requests just
+    // skip this header and get treated as anonymous.
+    const authHeaders = { "Content-Type": "application/json" };
+    if (currentUser) {
+      try {
+        authHeaders.Authorization = `Bearer ${await currentUser.getIdToken()}`;
+      } catch (err) {
+        console.error("Failed to get auth token:", err);
+      }
+    }
+
     const response = await fetch("/api/chat", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: authHeaders,
       body: JSON.stringify({
         message,
         history: chatHistory,
@@ -1392,6 +1406,12 @@ async function sendChatMessage(message, attachmentOrList) {
     const data = await response.json();
 
     if (!response.ok) {
+      if (data.error === "daily_limit") {
+        statusHandle.stop();
+        showLimitBanner(data.message);
+        addMessage(chatWindow, data.message || "Daily message limit reached.", "system");
+        return;
+      }
       throw new Error(data.error || "Server Error");
     }
 
@@ -1952,6 +1972,37 @@ function updateGuestBanner() {
       ? `Guest mode — ${left} free message${left === 1 ? "" : "s"} left`
       : "Guest mode — free messages used up";
   guestBanner.classList.remove("hidden");
+}
+
+// -------------------------------------
+// Daily free-message limit (signed-in free plan)
+// -------------------------------------
+// The actual cap is enforced server-side (see /api/chat's daily_limit
+// check) using the real Firestore-stored plan, not anything the client
+// sends — this banner just surfaces that server response, it isn't the
+// limit itself.
+const limitBanner = document.getElementById("limit-banner");
+const limitBannerText = document.getElementById("limit-banner-text");
+const planBadge = document.getElementById("plan-badge");
+
+function showLimitBanner(message) {
+  if (!limitBanner) return;
+  limitBannerText.textContent = message || "You've used your free messages for today.";
+  limitBanner.classList.remove("hidden");
+}
+
+function hideLimitBanner() {
+  if (limitBanner) limitBanner.classList.add("hidden");
+}
+
+function updatePlanBadge(plan) {
+  if (!planBadge) return;
+  if (plan === "pro") {
+    planBadge.classList.remove("hidden");
+    hideLimitBanner();
+  } else {
+    planBadge.classList.add("hidden");
+  }
 }
 
 // Reopens the login/signup overlay, optionally with a specific note (used
