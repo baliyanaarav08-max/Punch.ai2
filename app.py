@@ -130,30 +130,43 @@ def verify_request_uid():
     try:
         decoded = fb_auth.verify_id_token(token)
         return decoded.get("uid")
-    except Exception:
+    except Exception as e:
+        print(f"[Punch] ID token verification failed: {e}")
         return None
 
 
 def verify_request_token_with_contact():
-    """Same verification as verify_request_uid, but also returns whatever
-    email/phone the Firebase ID token itself carries, so Cashfree's
+    """Verifies the Firebase ID token from the Authorization: Bearer header
+    and also returns whatever email/phone it carries, so Cashfree's
     (mandatory) customer_details can be prefilled without a separate
-    Firestore round trip. Returns (uid, email, phone) — uid is None if the
-    token is missing/invalid; email/phone may be None even for a valid
-    token depending on how the user signed in."""
+    Firestore round trip.
+
+    Returns (uid, email, phone, error) — uid is None on any failure, and
+    `error` tells you *why*, since "not logged in", "server misconfigured",
+    and "expired session" all need different fixes and used to be
+    indistinguishable from the client's point of view:
+      - "admin_not_configured": Firebase Admin never initialized server-side
+        (FIREBASE_SERVICE_ACCOUNT_JSON/PATH missing or invalid) — this is a
+        deploy/config problem, not something the user can fix by logging in.
+      - "no_token": no Authorization header was sent at all.
+      - "invalid_token": a token was sent but Firebase rejected it (expired,
+        malformed, wrong project, clock skew, etc). The real exception is
+        printed to the server log so you can see the exact cause there.
+    """
     if fb_auth is None:
-        return None, None, None
+        return None, None, None, "admin_not_configured"
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
-        return None, None, None
+        return None, None, None, "no_token"
     token = header[7:].strip()
     if not token:
-        return None, None, None
+        return None, None, None, "no_token"
     try:
         decoded = fb_auth.verify_id_token(token)
-    except Exception:
-        return None, None, None
-    return decoded.get("uid"), decoded.get("email"), decoded.get("phone_number")
+    except Exception as e:
+        print(f"[Punch] ID token verification failed: {e}")
+        return None, None, None, "invalid_token"
+    return decoded.get("uid"), decoded.get("email"), decoded.get("phone_number"), None
 
 
 def get_user_plan_and_usage(uid):
@@ -1051,8 +1064,12 @@ def create_order():
     """Starts a Punch Pro upgrade purchase. Requires the caller to be signed
     in — anonymous/guest checkout is intentionally not supported since the
     Pro flag has to attach to a real account."""
-    uid, email, phone = verify_request_token_with_contact()
+    uid, email, phone, auth_error = verify_request_token_with_contact()
     if not uid:
+        if auth_error == "admin_not_configured":
+            return jsonify({"error": "Server auth isn't set up yet — contact support."}), 500
+        if auth_error == "invalid_token":
+            return jsonify({"error": "Your session has expired. Please log out and log back in."}), 401
         return jsonify({"error": "Please log in before upgrading to Pro."}), 401
     if not CASHFREE_CONFIGURED:
         return jsonify({"error": "Payments aren't configured on this server yet."}), 500
