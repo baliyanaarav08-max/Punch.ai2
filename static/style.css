@@ -15,15 +15,49 @@
 
 * { box-sizing: border-box; }
 
+/* ---------- Site-wide atmosphere ----------
+   A fixed, blurred violet/amber mesh sitting behind every page — the same
+   "orb" glow language the hero already uses, just stretched to be the
+   room the whole product sits in rather than one hero-only decoration.
+   Pure background, no layout cost, so it lifts index/tech/pricing alike. */
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-body);
   overflow-x: hidden;
+  position: relative;
+}
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(560px circle at 12% 8%, rgba(139, 92, 246, 0.16), transparent 60%),
+    radial-gradient(480px circle at 88% 18%, rgba(255, 182, 72, 0.10), transparent 58%),
+    radial-gradient(620px circle at 50% 105%, rgba(76, 58, 122, 0.22), transparent 62%);
+  pointer-events: none;
 }
 
 a { color: inherit; text-decoration: none; }
+
+/* Every page's thesis headline gets the same premium gradient-text
+   treatment — one shared selector, so index/tech/pricing all pick it up. */
+.hero h1 {
+  background: linear-gradient(120deg, var(--text) 25%, var(--violet-bright) 70%, var(--gold-a, #ffb976) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 /* ---------- Navbar ---------- */
 .navbar {
@@ -115,6 +149,39 @@ a { color: inherit; text-decoration: none; }
   font-size: 14px;
 }
 .btn-ghost:hover { border-color: var(--violet-dim); }
+
+/* Shared light-sweep micro-interaction for every primary/CTA-style button
+   site-wide (nav CTA, pricing CTAs, chat send button) — one rule instead
+   of one-off hovers per page, so the whole product feels consistently
+   "alive" rather than just the pricing page. */
+.btn-primary,
+.pricing-cta,
+.chat-input-row button {
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
+.btn-primary::after,
+.pricing-cta::after,
+.chat-input-row button::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -60%;
+  width: 45%;
+  height: 100%;
+  background: linear-gradient(115deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  transform: skewX(-18deg);
+  transition: left 0.55s ease;
+  pointer-events: none;
+}
+.btn-primary:hover::after,
+.pricing-cta:hover::after,
+.chat-input-row button:hover::after { left: 130%; }
+.btn-primary:hover,
+.pricing-cta:hover:not(:disabled) { transform: translateY(-2px); }
+.btn-primary:active,
+.pricing-cta:active:not(:disabled) { transform: translateY(0); }
 
 /* ---------- Hero ---------- */
 .hero {
@@ -488,8 +555,9 @@ a { color: inherit; text-decoration: none; }
 }
 .pricing-card-head h2 {
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 24px;
   margin: 0 0 10px;
+  letter-spacing: -0.2px;
 }
 .pricing-price {
   display: flex;
@@ -499,8 +567,9 @@ a { color: inherit; text-decoration: none; }
 }
 .pricing-amount {
   font-family: var(--font-display);
-  font-size: 36px;
+  font-size: 44px;
   font-weight: 700;
+  letter-spacing: -1px;
 }
 .pricing-period {
   color: var(--text-dim);
@@ -517,32 +586,47 @@ a { color: inherit; text-decoration: none; }
   margin: 0 0 26px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 13px;
   flex: 1;
 }
 .pricing-features li {
   font-size: 14px;
   color: var(--text);
-  padding-left: 24px;
+  padding-left: 30px;
   position: relative;
+  transition: transform 0.18s ease;
 }
+.pricing-features li:hover { transform: translateX(3px); }
 .pricing-features li::before {
   content: "✓";
   position: absolute;
   left: 0;
-  color: var(--violet-bright);
+  top: 1px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
   font-weight: 700;
+  background: rgba(139, 92, 246, 0.16);
+  color: var(--violet-bright);
+  transition: box-shadow 0.18s ease;
+}
+.pricing-features li:hover::before {
+  box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.12);
 }
 .pricing-cta {
   width: 100%;
   background: linear-gradient(135deg, var(--violet), var(--violet-dim));
   color: #fff;
   border: none;
-  padding: 13px 0;
-  border-radius: 11px;
+  padding: 15px 0;
+  border-radius: 12px;
   font-family: var(--font-body);
   font-weight: 700;
-  font-size: 14.5px;
+  font-size: 15px;
   cursor: pointer;
   transition: opacity 0.2s ease;
 }
@@ -759,7 +843,14 @@ a { color: inherit; text-decoration: none; }
   .hero { flex-direction: column; padding-top: 60px; text-align: center; }
   .hero-actions { justify-content: center; }
   .hero h1 { font-size: 40px; }
+  .navbar { gap: 10px; }
   .nav-toggle-btn { display: flex; }
+  /* The standalone "← Back Home" pill (tech.html, pricing.html) was
+     butting directly against the hamburger icon on narrow screens with
+     zero breathing room, wrapping to two lines and reading as a visual
+     collision. It's also redundant on mobile since "Home" is already the
+     first link inside the hamburger menu, so just drop it here. */
+  .navbar .btn-ghost { display: none; }
   .nav-links {
     display: none;
     position: absolute;
@@ -2572,15 +2663,92 @@ body.is-pro .btn-primary {
   border: 1px solid rgba(139, 92, 246, 0.18);
 }
 
-/* ---------- Pricing page: premium Pro card ---------- */
+/* ---------- Pricing page: Free vs Pro, both dressed to impress ----------
+   Free gets a quieter violet glass treatment so it reads as a real plan,
+   not a placeholder next to Pro; Pro gets the full animated gold ring
+   (same --pro-angle custom property the is-pro chat card already uses,
+   so the whole app feels like one consistent design language). */
+.pricing-grid {
+  align-items: start;
+  padding-top: 14px;
+}
+
+.pricing-card:not(.pricing-card-pro) {
+  background:
+    radial-gradient(circle at 20% 0%, rgba(139, 92, 246, 0.12), transparent 55%),
+    var(--card);
+  border-radius: 20px;
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.pricing-card:not(.pricing-card-pro):hover {
+  transform: translateY(-6px);
+  border-color: var(--violet-dim);
+  box-shadow: 0 30px 70px -34px rgba(139, 92, 246, 0.4);
+}
+.pricing-card:not(.pricing-card-pro) .pricing-card-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.pricing-card:not(.pricing-card-pro) .pricing-card-head h2::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--violet-bright);
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.7);
+}
+.pricing-card:not(.pricing-card-pro) .pricing-features li::before {
+  background: rgba(139, 92, 246, 0.16);
+  color: var(--violet-bright);
+}
+
 .pricing-card-pro {
   position: relative;
   border-color: transparent !important;
+  border-radius: 22px;
   background:
     linear-gradient(180deg, #1a1530, #12101f) padding-box,
-    linear-gradient(160deg, var(--gold-a), var(--violet-bright) 55%, var(--gold-c)) border-box;
+    conic-gradient(from var(--pro-angle, 0deg), var(--gold-a), var(--violet-bright), var(--gold-c), var(--gold-a)) border-box;
   border: 1.5px solid transparent;
   box-shadow: 0 40px 90px -35px var(--gold-glow), 0 30px 60px -30px rgba(0, 0, 0, 0.6);
+  animation: pro-border-spin 8s linear infinite;
+  transform: translateY(-14px);
+  padding-top: 34px;
+  padding-bottom: 34px;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.pricing-card-pro:hover {
+  transform: translateY(-20px);
+  box-shadow: 0 50px 110px -35px var(--gold-glow), 0 30px 60px -30px rgba(0, 0, 0, 0.7);
+}
+@media (max-width: 720px) {
+  .pricing-card-pro { transform: none; }
+  .pricing-card-pro:hover { transform: none; }
+}
+/* Soft ambient glow breathing behind the Pro card, echoing the hero orb */
+.pricing-card-pro::after {
+  content: "";
+  position: absolute;
+  inset: -40px;
+  z-index: -1;
+  background: radial-gradient(circle, var(--gold-glow), transparent 70%);
+  filter: blur(28px);
+  animation: pro-glow-pulse 3.4s ease-in-out infinite;
+}
+@keyframes pro-glow-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+.pricing-card-pro .pricing-amount {
+  background: linear-gradient(135deg, #fff, var(--gold-a));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.pricing-card-pro .pricing-features li::before {
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
+  color: #201404;
 }
 .pricing-badge {
   background: linear-gradient(135deg, var(--gold-a), var(--gold-c)) !important;
@@ -2591,9 +2759,299 @@ body.is-pro .btn-primary {
   background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
   color: #201404;
   font-weight: 700;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 #upgrade-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
   box-shadow: 0 14px 32px -12px var(--gold-glow);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pricing-card-pro { animation: none; }
+  .pricing-card-pro::after { animation: none; }
+}
+/* ==========================================
+   Extra polish pass — grain, motion, ambience
+   ========================================== */
+
+/* A faint film-grain layer over the whole app (site-wide, one rule) —
+   the kind of detail that reads as "designed" rather than "default dark
+   theme." Sits above the atmosphere mesh, below all real content. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.035;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Custom selection + scrollbar — small, but the kind of thing a themed
+   product actually bothers with. */
+::selection { background: rgba(139, 92, 246, 0.35); color: #fff; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--violet-dim);
+  border-radius: 999px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--violet); }
+
+/* ---------- Pricing hero: ambient orbs to match the home hero ---------- */
+.pricing-hero {
+  position: relative;
+  overflow: visible;
+}
+.pricing-hero::before,
+.pricing-hero::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  border-radius: 50%;
+  filter: blur(60px);
+  pointer-events: none;
+}
+.pricing-hero::before {
+  width: 320px;
+  height: 320px;
+  top: -60px;
+  right: 4%;
+  background: radial-gradient(circle, rgba(255, 182, 72, 0.22), transparent 70%);
+  animation: float 7s ease-in-out infinite;
+}
+.pricing-hero::after {
+  width: 260px;
+  height: 260px;
+  bottom: -80px;
+  left: 6%;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.22), transparent 70%);
+  animation: float 8s ease-in-out infinite reverse;
+}
+
+/* ---------- Kicker label above each plan name ---------- */
+.pricing-card-head {
+  position: relative;
+}
+.pricing-card:not(.pricing-card-pro) .pricing-card-head::before {
+  content: "STARTER";
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 2px;
+  color: var(--violet-bright);
+  opacity: 0.75;
+  margin-bottom: 8px;
+}
+.pricing-card-pro .pricing-card-head::before {
+  content: "MOST POWERFUL";
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 2px;
+  color: var(--gold-a);
+  opacity: 0.85;
+  margin-bottom: 8px;
+}
+
+/* Superscript-style ₹ currency symbol, cut from the amount so it reads
+   as one crafted numeral rather than a plain string. */
+.pricing-amount {
+  display: inline-flex;
+  align-items: flex-start;
+}
+.pricing-amount small {
+  font-size: 0.45em;
+  font-weight: 600;
+  margin-right: 2px;
+  margin-top: 0.35em;
+  opacity: 0.85;
+}
+
+/* Lightning glyph on the Pro CTA — a small but deliberate signal that
+   this button does something more than the quiet "current plan" button
+   beside it. */
+#upgrade-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+#upgrade-btn::before {
+  content: "⚡";
+  font-size: 13px;
+}
+
+/* ---------- Staggered entrance animation ----------
+   Hero copy and the two pricing cards rise into place on load instead of
+   popping in flat. Respects reduced-motion via the global rule above. */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* Pro's resting position is already raised (translateY(-14px), set on
+   .pricing-card-pro above) — this variant animates INTO that raised spot
+   instead of ending at translateY(0), which would otherwise silently
+   cancel the raise once the animation's fill-mode locks in its last
+   keyframe. */
+@keyframes rise-in-pro {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(-14px); }
+}
+.pricing-hero .hero-text > * {
+  animation: rise-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.pricing-hero .hero-text > *:nth-child(2) { animation-delay: 0.06s; }
+.pricing-hero .hero-text > *:nth-child(3) { animation-delay: 0.12s; }
+
+.pricing-card { animation: rise-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.pricing-card:not(.pricing-card-pro) { animation-delay: 0.1s; }
+.pricing-card-pro {
+  animation:
+    rise-in-pro 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both,
+    pro-border-spin 8s linear infinite;
+}
+@media (max-width: 720px) {
+  /* Pro's raise is disabled on mobile (see the max-width:720px rule
+     above), so the entrance there should land at translateY(0) too,
+     or the two animations fight over the resting transform again. */
+  .pricing-card-pro { animation: rise-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both, pro-border-spin 8s linear infinite; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pricing-hero::before,
+  .pricing-hero::after { animation: none; }
+  .pricing-hero .hero-text > *,
+  .pricing-card { animation: none; opacity: 1; transform: none; }
+  .pricing-card-pro { animation: none; opacity: 1; transform: translateY(-14px); }
+}
+@media (prefers-reduced-motion: reduce) and (max-width: 720px) {
+  .pricing-card-pro { transform: none; }
+}
+
+/* ==========================================
+   Home + Tech Desk — same craft, their own content
+   ========================================== */
+
+/* Every hero's copy rises in, staggered by position — one rule now
+   covers Home, Tech Desk and Pricing instead of a per-page copy. Home
+   and Tech both have 4 hero-text children (eyebrow, h1, sub, actions/
+   chips); Pricing has 3, already covered by the block above with tighter
+   delays — equal specificity, so whichever is declared later wins per
+   element, which is fine since both converge on the same motion. */
+.hero .hero-text > * {
+  animation: rise-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.hero .hero-text > *:nth-child(2) { animation-delay: 0.08s; }
+.hero .hero-text > *:nth-child(3) { animation-delay: 0.16s; }
+.hero .hero-text > *:nth-child(4) { animation-delay: 0.24s; }
+
+/* Home hero's orb gets its own gentle entrance instead of popping in at
+   full size while the copy is still rising. */
+.hero-orb-wrap {
+  animation: orb-rise-in 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+}
+@keyframes orb-rise-in {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Tech Desk hero gets the same ambient orb glow the pricing hero has —
+   ties the two "utility" pages together visually. */
+.tech-hero {
+  position: relative;
+  overflow: visible;
+}
+.tech-hero::before,
+.tech-hero::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  border-radius: 50%;
+  filter: blur(60px);
+  pointer-events: none;
+}
+.tech-hero::before {
+  width: 300px;
+  height: 300px;
+  top: -50px;
+  left: 6%;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.2), transparent 70%);
+  animation: float 7.5s ease-in-out infinite;
+}
+.tech-hero::after {
+  width: 260px;
+  height: 260px;
+  bottom: -70px;
+  right: 8%;
+  background: radial-gradient(circle, rgba(255, 182, 72, 0.16), transparent 70%);
+  animation: float 8.5s ease-in-out infinite reverse;
+}
+
+/* Quick-prompt chips stagger in after the hero copy, and lift slightly
+   on hover instead of just swapping border color. */
+.quick-prompts .chip {
+  animation: rise-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 0.15s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.quick-prompts .chip:nth-child(1) { animation-delay: 0.34s; }
+.quick-prompts .chip:nth-child(2) { animation-delay: 0.4s; }
+.quick-prompts .chip:nth-child(3) { animation-delay: 0.46s; }
+.quick-prompts .chip:nth-child(4) { animation-delay: 0.52s; }
+.chip:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px -14px rgba(139, 92, 246, 0.5);
+}
+
+/* Chat card (Home + Tech Desk share this class): a thin animated hairline
+   across the top, and a soft violet glow that wakes up once the person
+   actually clicks into the input — a small "this is alive" signal
+   instead of a flat static panel the whole time. */
+.chat-card {
+  position: relative;
+  transition: box-shadow 0.3s ease;
+}
+.chat-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--violet-bright), transparent);
+  background-size: 200% 100%;
+  opacity: 0.55;
+  animation: hairline-sweep 5s linear infinite;
+}
+@keyframes hairline-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.chat-card:focus-within {
+  box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(139, 92, 246, 0.3),
+    0 0 44px -14px rgba(139, 92, 246, 0.4);
+}
+
+/* Tech Desk watchlist panel gets the same top hairline treatment so it
+   reads as part of the same card family rather than a plain box. */
+.watchlist-section {
+  position: relative;
+  overflow: hidden;
+}
+.watchlist-section::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold-a, #ffb976), transparent);
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero .hero-text > *,
+  .hero-orb-wrap,
+  .quick-prompts .chip { animation: none; opacity: 1; transform: none; }
+  .tech-hero::before,
+  .tech-hero::after,
+  .chat-card::before { animation: none; }
 }
