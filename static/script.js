@@ -1900,6 +1900,7 @@ if (templatesForm) {
 }
 
 
+chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
 
   const message = chatInput.value.trim();
