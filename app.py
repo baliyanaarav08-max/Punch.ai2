@@ -5,6 +5,9 @@ import time
 import threading
 import io
 import re
+import secrets
+import hashlib
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Flask, request, jsonify, render_template
@@ -31,7 +34,7 @@ app = Flask(__name__)
 
 # --- Gemini (Google AI Studio) ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 # --- Groq (backup AI, used only if Gemini fails) ---
@@ -111,6 +114,61 @@ def _cashfree_headers():
 
 FREE_DAILY_MESSAGE_LIMIT = 20
 
+# --- Resend (transactional email, used for price-drop alerts) ---
+# Get a key from resend.com -> API Keys. FROM_EMAIL must be on a domain
+# you've verified in Resend; without both set, send_price_drop_email()
+# just logs and returns False rather than erroring the whole check.
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+RESEND_FROM_EMAIL = os.environ.get("RESEND_FROM_EMAIL", f"{ASSISTANT_NAME} <alerts@punch.ai>")
+
+
+def _get_user_email(uid):
+    """Firebase Auth is the source of truth for email, not Firestore, so
+    this is a small Admin SDK lookup rather than trusting anything stored
+    on the user's own document."""
+    if fb_auth is None:
+        return None
+    try:
+        return fb_auth.get_user(uid).email
+    except Exception as e:
+        print(f"[Punch] Failed to look up email for {uid}: {e}")
+        return None
+
+
+def send_price_drop_email(to_email, product_name, current_price, target_price):
+    """Sends a price-drop alert via Resend's REST API. Returns True only on
+    a confirmed send, so the caller can decide whether to mark this price
+    level as already-alerted. Best-effort: any failure (missing config,
+    network error, bad response) just returns False and logs, never raises
+    into the check_all request."""
+    if not (RESEND_API_KEY and to_email):
+        return False
+    try:
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "from": RESEND_FROM_EMAIL,
+                "to": [to_email],
+                "subject": f"Price drop: {product_name} is now ₹{current_price:,}",
+                "html": (
+                    f"<p>Good news — <strong>{product_name}</strong> just dropped to "
+                    f"<strong>₹{current_price:,}</strong>, at or below your target of "
+                    f"₹{target_price:,.0f}.</p>"
+                    f"<p><a href='https://punch.ai/tech'>Open Punch Tech Desk</a> to take a look.</p>"
+                ),
+            },
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            print(f"[Punch] Resend send failed ({resp.status_code}): {resp.text[:300]}")
+            return False
+        return True
+    except requests.RequestException as e:
+        print(f"[Punch] Resend send error: {e}")
+        return False
+
+
 
 def verify_request_uid():
     """Pulls a Firebase ID token from the Authorization: Bearer header and
@@ -169,26 +227,58 @@ def verify_request_token_with_contact():
     return decoded.get("uid"), decoded.get("email"), decoded.get("phone_number"), None
 
 
+PRO_SUBSCRIPTION_DAYS = 30
+
+
+def _parse_dt(value):
+    """Firestore gives back a proper datetime for timestamp fields, but this
+    stays defensive in case a value ever arrives as something else."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return None
+
+
 def get_user_plan_and_usage(uid):
-    """Authoritative (server-side) lookup of a user's plan and today's
-    message count, straight from Firestore — never trusts the client's own
-    claim about its plan. Returns (plan, message_count_today). Missing
-    profile / Admin SDK not configured both degrade to ("free", 0) rather
-    than blocking the request outright."""
+    """Authoritative (server-side) lookup of a user's plan, today's message
+    count, and any unused referral bonus messages — straight from
+    Firestore, never trusted from the client. Returns
+    (plan, message_count_today, bonus_messages_remaining).
+
+    Pro is time-boxed: a successful payment sets proExpiresAt ~30 days out
+    (see /api/verify_payment). Every plan check compares against that, so a
+    lapsed subscription is treated as free immediately — no separate
+    "downgrade" job needed. When a lapsed Pro account is spotted, this also
+    writes plan back to "free" in Firestore so the rest of the app (e.g. the
+    client-side plan reads in tech.js/pricing.js) stays in sync rather than
+    only ever being correct through this one function."""
     if _fb_db is None or not uid:
-        return "free", 0
+        return "free", 0, 0
     try:
-        snap = _fb_db.collection("users").document(uid).get()
+        ref = _fb_db.collection("users").document(uid)
+        snap = ref.get()
         data = snap.to_dict() or {}
         plan = data.get("plan") or "free"
+
+        if plan == "pro":
+            expires_at = _parse_dt(data.get("proExpiresAt"))
+            if expires_at and datetime.now(timezone.utc) > expires_at:
+                plan = "free"
+                try:
+                    ref.set({"plan": "free"}, merge=True)
+                except Exception as e:
+                    print(f"[Punch] Failed to downgrade expired Pro user {uid}: {e}")
+
         today = time.strftime("%Y-%m-%d")
         count = data.get("dailyMessageCount") or 0
         if (data.get("dailyMessageDate") or "") != today:
             count = 0
-        return plan, count
+        bonus_remaining = max(0, int(data.get("bonusMessagesRemaining") or 0))
+        return plan, count, bonus_remaining
     except Exception as e:
         print(f"[Punch] Failed to read plan/usage for {uid}: {e}")
-        return "free", 0
+        return "free", 0, 0
 
 
 def increment_daily_message_count(uid):
@@ -209,12 +299,289 @@ def increment_daily_message_count(uid):
     except Exception as e:
         print(f"[Punch] Failed to increment daily count for {uid}: {e}")
 
+
+def consume_bonus_message(uid):
+    """Spends one referral bonus message. Best-effort like the daily
+    counter above — worst case on a write failure is the user gets one
+    extra free message, which isn't worth failing the request over."""
+    if _fb_db is None or not uid:
+        return
+    try:
+        ref = _fb_db.collection("users").document(uid)
+        snap = ref.get()
+        data = snap.to_dict() or {}
+        remaining = max(0, int(data.get("bonusMessagesRemaining") or 0))
+        if remaining > 0:
+            ref.set({"bonusMessagesRemaining": remaining - 1}, merge=True)
+    except Exception as e:
+        print(f"[Punch] Failed to consume bonus message for {uid}: {e}")
+
+
+# --- Referral rewards ---
+REFERRAL_BONUS_MESSAGES = 10
+
+
+def _generate_referral_code():
+    # 8 hex chars keeps codes short enough to read aloud/type, while the
+    # dedicated referral_codes collection (checked for collisions below)
+    # makes a same-code collision a non-issue even for a large user base.
+    return secrets.token_hex(4).upper()
+
+
+@app.route("/api/referral/code", methods=["GET"])
+def referral_code():
+    """Returns the caller's own referral code, generating and persisting
+    one on first request. Codes live in their own top-level collection
+    (code -> uid) so redeeming one is a single cheap document lookup
+    instead of a query across all users."""
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to get your referral link."}), 401
+    if _fb_db is None:
+        return jsonify({"error": "This feature isn't configured on this server yet."}), 500
+
+    user_ref = _fb_db.collection("users").document(uid)
+    data = user_ref.get().to_dict() or {}
+    code = data.get("referralCode")
+    if not code:
+        # Extremely unlikely to collide at this scale, but loop just in
+        # case rather than trusting a single random draw.
+        for _ in range(5):
+            candidate = _generate_referral_code()
+            code_ref = _fb_db.collection("referral_codes").document(candidate)
+            if not code_ref.get().exists:
+                code_ref.set({"uid": uid, "createdAt": fb_firestore.SERVER_TIMESTAMP})
+                code = candidate
+                break
+        if not code:
+            return jsonify({"error": "Could not generate a referral code — please try again."}), 500
+        user_ref.set({"referralCode": code}, merge=True)
+
+    referral_count = int(data.get("referralCount") or 0)
+    return jsonify({"code": code, "referralCount": referral_count, "bonusPerReferral": REFERRAL_BONUS_MESSAGES})
+
+
+@app.route("/api/referral/redeem", methods=["POST"])
+def referral_redeem():
+    """Credits both sides of a referral the first time a new user redeems a
+    code — never repeatedly, and never for someone redeeming their own
+    code. Bonus messages are added to a pool (bonusMessagesRemaining) that
+    /api/chat draws from once the daily free limit is hit, so they don't
+    silently expire unused at midnight."""
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in first."}), 401
+    if _fb_db is None:
+        return jsonify({"error": "This feature isn't configured on this server yet."}), 500
+
+    code = ((request.get_json(force=True) or {}).get("code") or "").strip().upper()
+    if not code:
+        return jsonify({"error": "Missing referral code"}), 400
+
+    user_ref = _fb_db.collection("users").document(uid)
+    user_data = user_ref.get().to_dict() or {}
+    if user_data.get("referredBy"):
+        return jsonify({"error": "You've already redeemed a referral code."}), 400
+
+    code_snap = _fb_db.collection("referral_codes").document(code).get()
+    if not code_snap.exists:
+        return jsonify({"error": "That referral code doesn't look right."}), 404
+    referrer_uid = (code_snap.to_dict() or {}).get("uid")
+    if not referrer_uid or referrer_uid == uid:
+        return jsonify({"error": "You can't redeem your own referral code."}), 400
+
+    referrer_ref = _fb_db.collection("users").document(referrer_uid)
+    referrer_data = referrer_ref.get().to_dict() or {}
+
+    user_ref.set(
+        {
+            "referredBy": referrer_uid,
+            "bonusMessagesRemaining": max(0, int(user_data.get("bonusMessagesRemaining") or 0))
+            + REFERRAL_BONUS_MESSAGES,
+        },
+        merge=True,
+    )
+    referrer_ref.set(
+        {
+            "bonusMessagesRemaining": max(0, int(referrer_data.get("bonusMessagesRemaining") or 0))
+            + REFERRAL_BONUS_MESSAGES,
+            "referralCount": int(referrer_data.get("referralCount") or 0) + 1,
+        },
+        merge=True,
+    )
+    return jsonify({"success": True, "bonusMessages": REFERRAL_BONUS_MESSAGES})
+
+
+def _credit_referral_bonus_if_first_purchase(uid, existing_user_data):
+    """When someone who was referred makes their *first* Pro purchase,
+    gives the referrer an extra thank-you bonus on top of the signup
+    bonus they already got. Best-effort/non-blocking — never raises, since
+    this runs inside the payment-verification path and a bonus-crediting
+    hiccup should never make a real payment look like it failed."""
+    try:
+        if existing_user_data.get("plan") == "pro":
+            return  # already a paying Pro user before this purchase — not a "first" conversion
+        referrer_uid = existing_user_data.get("referredBy")
+        if not referrer_uid or _fb_db is None:
+            return
+        referrer_ref = _fb_db.collection("users").document(referrer_uid)
+        referrer_data = referrer_ref.get().to_dict() or {}
+        referrer_ref.set(
+            {
+                "bonusMessagesRemaining": max(0, int(referrer_data.get("bonusMessagesRemaining") or 0))
+                + REFERRAL_BONUS_MESSAGES,
+            },
+            merge=True,
+        )
+    except Exception as e:
+        print(f"[Punch] Failed to credit referral purchase bonus: {e}")
+
+
+# --- Persistent memory (Punch Pro feature) ---
+# A running list of durable facts Punch remembers about a Pro user across
+# separate chats — not just the one-time Customize profile, but things
+# picked up naturally in conversation (an ongoing project, a goal, a
+# preference). Stored as small documents in users/{uid}/memory so the user
+# can see and delete individual facts, not a single opaque blob.
+MEMORY_FACT_LIMIT = 30  # oldest facts drop off the injected context past this
+MEMORY_MAX_STORED = 60  # hard cap on stored facts per user regardless of plan changes
+
+
+def get_memory_facts(uid, limit=MEMORY_FACT_LIMIT):
+    if _fb_db is None or not uid:
+        return []
+    try:
+        docs = (
+            _fb_db.collection("users")
+            .document(uid)
+            .collection("memory")
+            .order_by("createdAt", direction=fb_firestore.Query.DESCENDING)
+            .limit(limit)
+            .stream()
+        )
+        facts = [(d.id, (d.to_dict() or {}).get("fact", "")) for d in docs]
+        facts.reverse()  # oldest-first reads more naturally in a prompt
+        return facts
+    except Exception as e:
+        print(f"[Punch] Failed to read memory for {uid}: {e}")
+        return []
+
+
+def add_memory_fact(uid, fact):
+    fact = (fact or "").strip()
+    if not fact or _fb_db is None or not uid:
+        return None
+    try:
+        mem_ref = _fb_db.collection("users").document(uid).collection("memory")
+        existing = list(mem_ref.order_by("createdAt").limit(MEMORY_MAX_STORED + 1).stream())
+        if len(existing) >= MEMORY_MAX_STORED:
+            existing[0].reference.delete()  # drop the single oldest fact to make room
+        doc_ref = mem_ref.document()
+        doc_ref.set({"fact": fact, "createdAt": fb_firestore.SERVER_TIMESTAMP})
+        return doc_ref.id
+    except Exception as e:
+        print(f"[Punch] Failed to add memory fact for {uid}: {e}")
+        return None
+
+
+def extract_memory_fact_async(uid, message, reply):
+    """Fires a small, cheap classification call in the background to spot
+    a durable fact worth remembering from this exchange (a name, an
+    ongoing project, a goal, a stated preference) — and stores it if found.
+    Runs on a daemon thread so it never adds latency to the reply the user
+    is waiting on; best-effort by nature, same as the daily-counter writes
+    elsewhere in this file. Skipped for trivial exchanges to avoid an extra
+    API call on every single "thanks" or "hi"."""
+    if len(message) < 12 or _fb_db is None:
+        return
+
+    def _run():
+        try:
+            extraction_prompt = (
+                "Look at this one exchange between a user and an AI assistant. Decide if it "
+                "contains a durable fact worth remembering about the user for future "
+                "conversations — e.g. their name, job, an ongoing project, a goal, a stated "
+                "preference, a recurring situation. Ignore one-off questions, small talk, or "
+                "anything not really about the user themselves.\n\n"
+                f"User: {message[:800]}\nAssistant: {reply[:800]}\n\n"
+                "If there IS a worth-remembering fact, reply with ONLY that fact as one short "
+                "plain sentence (under 20 words), written in third person (e.g. 'Is learning "
+                "React and building a portfolio site.'). If there is NOT, reply with exactly: "
+                "NONE"
+            )
+            text = ask_gemini(extraction_prompt, [{"role": "user", "parts": [{"text": message[:800]}]}], max_tokens=60)
+            fact = (text or "").strip().strip('"')
+            if fact and fact.upper() != "NONE" and len(fact) < 220:
+                add_memory_fact(uid, fact)
+        except Exception as e:
+            print(f"[Punch] Memory extraction failed for {uid}: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+@app.route("/api/memory/list", methods=["GET"])
+def memory_list():
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to view memory."}), 401
+    plan, _, _ = get_user_plan_and_usage(uid)
+    if plan != "pro":
+        return jsonify({"error": "Persistent memory is a Punch Pro feature."}), 403
+    facts = get_memory_facts(uid, limit=MEMORY_MAX_STORED)
+    return jsonify({"facts": [{"id": fid, "fact": fact} for fid, fact in facts]})
+
+
+@app.route("/api/memory/add", methods=["POST"])
+def memory_add():
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to use memory."}), 401
+    plan, _, _ = get_user_plan_and_usage(uid)
+    if plan != "pro":
+        return jsonify({"error": "Persistent memory is a Punch Pro feature."}), 403
+    fact = ((request.get_json(force=True) or {}).get("fact") or "").strip()
+    if not fact:
+        return jsonify({"error": "Nothing to remember"}), 400
+    if len(fact) > 220:
+        return jsonify({"error": "Keep it under 220 characters"}), 400
+    fact_id = add_memory_fact(uid, fact)
+    if not fact_id:
+        return jsonify({"error": "Could not save that right now"}), 500
+    return jsonify({"success": True, "id": fact_id})
+
+
+@app.route("/api/memory/delete", methods=["POST"])
+def memory_delete():
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to use memory."}), 401
+    if _fb_db is None:
+        return jsonify({"error": "This feature isn't configured on this server yet."}), 500
+    fact_id = ((request.get_json(force=True) or {}).get("id") or "").strip()
+    if not fact_id:
+        return jsonify({"error": "Missing id"}), 400
+    _fb_db.collection("users").document(uid).collection("memory").document(fact_id).delete()
+    return jsonify({"success": True})
+
+
+@app.route("/api/memory/clear", methods=["POST"])
+def memory_clear():
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to use memory."}), 401
+    if _fb_db is None:
+        return jsonify({"error": "This feature isn't configured on this server yet."}), 500
+    mem_ref = _fb_db.collection("users").document(uid).collection("memory")
+    for doc in mem_ref.stream():
+        doc.reference.delete()
+    return jsonify({"success": True})
+
 # Base64-encoded attachment data is ~33% larger than the original file, so
 # cap the encoded string length to keep well under typical request-size
 # limits. Raised from the original image-only cap to comfortably fit short
 # video clips and PDFs too — if your host (nginx/gunicorn, Render, etc.) has
 # its own request-body limit, raise that as well or this cap won't matter.
-MAX_ATTACHMENT_B64_CHARS = 25_000_000  # roughly an 18 MB original file
+MAX_ATTACHMENT_B64_CHARS = 42_000_000  # roughly a 30 MB original file
 
 # Matches a YouTube watch/shorts/short-link URL anywhere in a message so it
 # can be handed straight to Gemini's fileData understanding — this is the
@@ -271,6 +638,7 @@ def build_system_prompt(
     allow_clarify=False,
     allow_pdf_generation=False,
     pdf_pro_gated=False,
+    memory_facts=None,
 ):
     base = (
         f"You are {ASSISTANT_NAME}, a helpful, knowledgeable AI assistant. "
@@ -310,6 +678,7 @@ def build_system_prompt(
         want_to_become = (profile.get("wantToBecome") or "").strip()
         about = (profile.get("about") or "").strip()
         tone = (profile.get("tone") or "").strip().lower()
+        language = (profile.get("language") or "").strip()
 
         TONE_INSTRUCTIONS = {
             "formal": (
@@ -339,6 +708,14 @@ def build_system_prompt(
         if tone in TONE_INSTRUCTIONS:
             base += "\n\n" + TONE_INSTRUCTIONS[tone]
 
+        if language:
+            base += (
+                f"\n\nThe person's preferred reply language is {language}. Reply in "
+                f"{language} by default, even if their message is written in a different "
+                f"language — unless they explicitly ask you to switch languages for that "
+                f"message, in which case follow their request."
+            )
+
         if any([name, hobby, goal, want_to_become, about]):
             lines = ["\n\nHere is what you know about the person you're talking to:"]
             if name:
@@ -361,6 +738,13 @@ def build_system_prompt(
                 "recite this list back to them or bring it up when it's irrelevant."
             )
             base += "\n".join(lines)
+    if memory_facts:
+        base += (
+            "\n\nYou also remember these things about this person from earlier conversations "
+            "(a Punch Pro feature) — use them naturally where relevant, the same way you'd "
+            "use the profile info above, and don't recite the list back to them:\n"
+        )
+        base += "\n".join(f"- {fact}" for fact in memory_facts)
     if voice_mode:
         base += (
             " IMPORTANT: this reply will be read aloud, not read on screen. Keep it to 1-3 "
@@ -881,6 +1265,23 @@ def tech_chat():
     return jsonify({"reply": reply, "provider": provider})
 
 
+@app.route("/api/usage", methods=["GET"])
+def usage():
+    """Lightweight endpoint so the frontend can show 'X of 20 messages used
+    today' without needing to send a whole chat message first. Same
+    authoritative Firestore lookup as /api/chat's own limit check — this
+    never invents a number the server itself wouldn't enforce. Guests/
+    unauthenticated callers get a harmless default since they're on their
+    own separate client-side guest limit, not this one."""
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"plan": "free", "used": 0, "limit": FREE_DAILY_MESSAGE_LIMIT, "bonus": 0})
+    plan, used_today, bonus_remaining = get_user_plan_and_usage(uid)
+    return jsonify(
+        {"plan": plan, "used": used_today, "limit": FREE_DAILY_MESSAGE_LIMIT, "bonus": bonus_remaining}
+    )
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json(force=True)
@@ -900,27 +1301,36 @@ def chat():
 
     for att in attachments:
         if att.get("data") and len(att["data"]) > MAX_ATTACHMENT_B64_CHARS:
-            return jsonify({"error": "One of those files is too large — please use something under ~18 MB."}), 413
+            return jsonify({"error": "One of those files is too large — please use something under ~25 MB."}), 413
 
     # Server-side plan + daily-limit check. Guests/unauthenticated requests
     # (no valid ID token) aren't touched here — that's guest mode's own
     # client-side 4-message cap, a separate and much smaller limit.
     uid = verify_request_uid()
     plan = "free"
+    use_bonus_message = False
     if uid:
-        plan, used_today = get_user_plan_and_usage(uid)
+        plan, used_today, bonus_remaining = get_user_plan_and_usage(uid)
         if plan != "pro" and used_today >= FREE_DAILY_MESSAGE_LIMIT:
-            return jsonify(
-                {
-                    "error": "daily_limit",
-                    "message": (
-                        f"You've used all {FREE_DAILY_MESSAGE_LIMIT} free messages for today. "
-                        "Upgrade to Punch Pro for unlimited messages, or come back tomorrow."
-                    ),
-                }
-            ), 403
+            if bonus_remaining > 0:
+                # Referral bonus messages carry over past the daily wall
+                # instead of expiring unused at midnight — see
+                # /api/referral/redeem for how they're earned.
+                use_bonus_message = True
+            else:
+                return jsonify(
+                    {
+                        "error": "daily_limit",
+                        "message": (
+                            f"You've used all {FREE_DAILY_MESSAGE_LIMIT} free messages for today. "
+                            "Upgrade to Punch Pro for unlimited messages, invite a friend for "
+                            "bonus messages, or come back tomorrow."
+                        ),
+                    }
+                ), 403
 
     context_block = web_search(message) if message and needs_search(message) else None
+    memory_facts = [fact for _, fact in get_memory_facts(uid)] if (uid and plan == "pro") else None
     system_prompt = build_system_prompt(
         voice_mode=False,
         context_block=context_block,
@@ -928,6 +1338,7 @@ def chat():
         allow_clarify=True,
         allow_pdf_generation=(plan == "pro"),
         pdf_pro_gated=(plan != "pro"),
+        memory_facts=memory_facts,
     )
 
     user_parts = build_user_parts(message, attachments)
@@ -948,7 +1359,10 @@ def chat():
         return jsonify({"error": "AI request failed", "detail": str(e)}), 500
 
     if uid and plan != "pro":
-        increment_daily_message_count(uid)
+        if use_bonus_message:
+            consume_bonus_message(uid)
+        else:
+            increment_daily_message_count(uid)
 
     clarify_payload = parse_clarify_reply(reply)
     if clarify_payload:
@@ -999,6 +1413,12 @@ def chat():
                 "provider": provider,
             }
         )
+
+    # Plain text reply (not a clarify question, PDF, or broken-JSON retry) —
+    # this is the normal case, and the only one worth spending a background
+    # memory-extraction call on.
+    if uid and plan == "pro":
+        extract_memory_fact_async(uid, message, reply)
 
     return jsonify({"reply": reply, "provider": provider})
 
@@ -1157,13 +1577,53 @@ def verify_payment():
 
     if _fb_db is not None:
         try:
-            _fb_db.collection("users").document(uid).set(
-                {"plan": "pro", "proSince": fb_firestore.SERVER_TIMESTAMP}, merge=True
-            )
+            user_ref = _fb_db.collection("users").document(uid)
+            existing = user_ref.get().to_dict() or {}
+            now = datetime.now(timezone.utc)
+            # Renewing before the current period ends extends from the
+            # existing expiry rather than from "now", so paying early never
+            # costs the user days they already paid for.
+            current_expiry = _parse_dt(existing.get("proExpiresAt"))
+            base = current_expiry if (current_expiry and current_expiry > now) else now
+            new_expiry = base + timedelta(days=PRO_SUBSCRIPTION_DAYS)
+
+            update = {
+                "plan": "pro",
+                "proExpiresAt": new_expiry,
+                "lastPaymentOrderId": order_id,
+                "lastPaymentAt": fb_firestore.SERVER_TIMESTAMP,
+            }
+            if not existing.get("proSince"):
+                update["proSince"] = fb_firestore.SERVER_TIMESTAMP
+            user_ref.set(update, merge=True)
+
+            _credit_referral_bonus_if_first_purchase(uid, existing)
         except Exception as e:
             return jsonify({"error": f"Payment succeeded but activating Pro failed: {e}"}), 500
 
     return jsonify({"success": True})
+
+
+@app.route("/api/subscription_status", methods=["GET"])
+def subscription_status():
+    """Powers the 'Pro · renews on <date>' / 'Renew now' UI on the pricing
+    page. Returns plan plus, for Pro accounts, how many days are left on the
+    current 30-day period — read through the same expiry-aware
+    get_user_plan_and_usage() so a lapsed subscription is never reported as
+    still active."""
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"plan": "free", "expiresAt": None, "daysLeft": None})
+    plan, _, _ = get_user_plan_and_usage(uid)
+    expires_at_iso = None
+    days_left = None
+    if plan == "pro" and _fb_db is not None:
+        data = _fb_db.collection("users").document(uid).get().to_dict() or {}
+        expires_at = _parse_dt(data.get("proExpiresAt"))
+        if expires_at:
+            expires_at_iso = expires_at.isoformat()
+            days_left = max(0, (expires_at - datetime.now(timezone.utc)).days)
+    return jsonify({"plan": plan, "expiresAt": expires_at_iso, "daysLeft": days_left})
 
 
 # --- Tech Desk price-drop watchlist (Punch Pro feature) ---
@@ -1177,7 +1637,7 @@ def watchlist_add():
     uid = verify_request_uid()
     if not uid:
         return jsonify({"error": "Please log in to use price watching."}), 401
-    plan, _ = get_user_plan_and_usage(uid)
+    plan, _, _ = get_user_plan_and_usage(uid)
     if plan != "pro":
         return jsonify({"error": "Price watching is a Punch Pro feature. Upgrade to unlock it."}), 403
     if _fb_db is None:
@@ -1250,24 +1710,149 @@ def _check_one_watch_item(item_text):
 
 @app.route("/api/watchlist/check_all", methods=["POST"])
 def watchlist_check_all():
-    """Re-checks every watched item for every user and updates
-    lastCheckedPrice. Intended to be called by an external scheduler (see
-    the module-level comment above) — it doesn't send any notification
-    itself yet (no email/push wiring in this app), it just refreshes the
-    stored price so the Tech Desk UI shows current numbers next time the
-    user looks at their watchlist."""
+    """Re-checks every watched item for every user, updates
+    lastCheckedPrice, and emails the user when a price drops at or below
+    their target (via Resend — see send_email). Intended to be called by an
+    external scheduler (see the module-level comment above); each item is
+    only emailed once per price level (alertedAtPrice) so a re-check that
+    finds the same already-under-target price doesn't spam the user
+    again — a genuinely new, lower price does trigger a fresh email."""
     if _fb_db is None:
         return jsonify({"error": "This feature isn't configured on this server yet."}), 500
     checked = 0
+    alerted = 0
     for user_doc in _fb_db.collection("users").stream():
+        uid = user_doc.id
+        user_email = None
         watch_ref = user_doc.reference.collection("watchlist")
-        for item_doc in watch_ref.stream():
+        items = list(watch_ref.stream())
+        if not items:
+            continue
+        for item_doc in items:
             item = item_doc.to_dict()
             price = _check_one_watch_item(item.get("productName", ""))
-            if price is not None:
-                item_doc.reference.set({"lastCheckedPrice": price}, merge=True)
-                checked += 1
-    return jsonify({"checked": checked})
+            if price is None:
+                continue
+            checked += 1
+            update = {"lastCheckedPrice": price}
+            target = item.get("targetPrice")
+            already_alerted_at = item.get("alertedAtPrice")
+            hit_target = isinstance(target, (int, float)) and price <= target
+            if hit_target and already_alerted_at != price:
+                if user_email is None:
+                    user_email = _get_user_email(uid)
+                if user_email and send_price_drop_email(
+                    user_email, item.get("productName", "your item"), price, target
+                ):
+                    update["alertedAtPrice"] = price
+                    alerted += 1
+            item_doc.reference.set(update, merge=True)
+    return jsonify({"checked": checked, "alertsSent": alerted})
+
+
+# --- Document templates (Punch Pro feature) ---
+# Each template is just a specialized prompt fed through the same AI +
+# generate_pdf_bytes pipeline already used for free-form PDF export in
+# chat — no separate rendering path to maintain.
+DOCUMENT_TEMPLATES = {
+    "resume": {
+        "label": "Resume",
+        "prompt": (
+            "Write a clean, professional, ATS-friendly resume in plain text using this "
+            "structure: a '# ' line with the person's name, then '## ' section headings "
+            "(Summary, Experience, Education, Skills, and any other relevant sections), "
+            "'- ' bullet points for experience/skills entries. Use only the information "
+            "given below — do not invent job titles, companies, dates, or achievements "
+            "that weren't provided; if something important is missing, write a sensible "
+            "placeholder in [brackets] instead of fabricating specifics.\n\n"
+            "Details provided by the user:\n{details}"
+        ),
+    },
+    "invoice": {
+        "label": "Invoice",
+        "prompt": (
+            "Write a clean, professional invoice in plain text using this structure: a '# ' "
+            "line reading 'Invoice', then '## ' headings for Bill To, Items, and Total. "
+            "List each line item with '- ' bullets showing description, quantity, unit "
+            "price, and line total, then a clear final total. Use only the information "
+            "given below — do not invent amounts, names, or dates that weren't provided; "
+            "use [brackets] placeholders for anything missing.\n\n"
+            "Details provided by the user:\n{details}"
+        ),
+    },
+    "report": {
+        "label": "Report",
+        "prompt": (
+            "Write a well-organized, professional report in plain text using this "
+            "structure: a '# ' title line, then '## ' section headings (e.g. Overview, "
+            "Findings/Body, Conclusion — adapt sections sensibly to the topic), with clear "
+            "paragraphs and '- ' bullets where a list genuinely fits better than prose. "
+            "Write real, substantive content based on the details below — don't pad with "
+            "filler.\n\nDetails provided by the user:\n{details}"
+        ),
+    },
+}
+
+
+@app.route("/api/templates", methods=["GET"])
+def list_templates():
+    return jsonify({"templates": [{"id": k, "label": v["label"]} for k, v in DOCUMENT_TEMPLATES.items()]})
+
+
+@app.route("/api/generate_document", methods=["POST"])
+def generate_document():
+    """Punch Pro feature: fills a document template (resume/invoice/report)
+    from short user-provided details and returns a ready PDF — reuses the
+    exact same AI fallback chain and PDF renderer as chat's free-form PDF
+    export, just with a template-specific prompt instead of the model
+    deciding the structure itself."""
+    uid = verify_request_uid()
+    if not uid:
+        return jsonify({"error": "Please log in to use document templates."}), 401
+    plan, _, _ = get_user_plan_and_usage(uid)
+    if plan != "pro":
+        return jsonify({"error": "Document templates are a Punch Pro feature. Upgrade to unlock them."}), 403
+
+    data = request.get_json(force=True)
+    template_id = (data.get("template") or "").strip()
+    details = (data.get("details") or "").strip()
+    if template_id not in DOCUMENT_TEMPLATES:
+        return jsonify({"error": "Unknown template"}), 400
+    if not details:
+        return jsonify({"error": "Add a few details for the document first."}), 400
+
+    template = DOCUMENT_TEMPLATES[template_id]
+    prompt = template["prompt"].format(details=details[:4000])
+    system_prompt = (
+        f"You are {ASSISTANT_NAME}, generating a document from a template. Follow the "
+        "formatting instructions exactly: '# ' for the main heading, '## ' for section "
+        "headings, '- ' for bullets, blank lines between paragraphs, no other markdown. "
+        "Respond with ONLY the document content itself — no preamble, no commentary "
+        "before or after it."
+    )
+    try:
+        reply, provider = get_ai_reply(
+            system_prompt, [{"role": "user", "parts": [{"text": prompt}]}], max_tokens=3000
+        )
+    except (requests.RequestException, RuntimeError) as e:
+        return jsonify({"error": "AI request failed", "detail": str(e)}), 500
+
+    title = template["label"]
+    try:
+        pdf_bytes = generate_pdf_bytes(title, reply)
+    except Exception as e:
+        return jsonify({"error": f"Could not render PDF: {e}"}), 500
+
+    filename = f"{template_id}-{int(time.time())}.pdf"
+    return jsonify(
+        {
+            "success": True,
+            "title": title,
+            "filename": filename,
+            "data": base64.b64encode(pdf_bytes).decode("ascii"),
+            "provider": provider,
+        }
+    )
 
 
 if __name__ == "__main__":

@@ -46,8 +46,8 @@ const chatAttachInput = document.getElementById("chat-attach-input");
 const chatAttachBtn = document.getElementById("chat-attach-btn");
 const chatAttachPreview = document.getElementById("chat-attach-preview");
 
-const MAX_ATTACHMENT_BYTES = 18 * 1024 * 1024; // 18 MB, matches the server-side cap
-const MAX_ATTACHMENTS_PER_MESSAGE = 4;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB, matches the server-side cap
+const MAX_ATTACHMENTS_PER_MESSAGE = 6;
 let pendingAttachments = []; // [{ file, isImage, mimeType, name, localPreviewUrl }, ...]
 
 // Kept as a getter-style alias so any older single-attachment call site
@@ -127,7 +127,7 @@ function handleSelectedFile(fileOrFiles) {
       break;
     }
     if (file.size > MAX_ATTACHMENT_BYTES) {
-      alert(`"${file.name}" is too large — please use something under 18 MB.`);
+      alert(`"${file.name}" is too large — please use something under 25 MB.`);
       continue;
     }
     const mimeType = file.type || "application/octet-stream";
@@ -248,6 +248,7 @@ async function uploadAttachmentToStorage(uid, chatId, file) {
 // Punch AI - User Profile (name, hobbies, goals, photo)
 // ==========================================
 let userProfile = {}; // never includes email/password — profile doc is separate from auth
+let isProUserGlobal = false; // kept in sync by applyProTheme(); read by the Memory/Templates modals
 
 const profileCorner = document.getElementById("profile-corner");
 const profileAvatar = document.getElementById("profile-avatar");
@@ -266,6 +267,7 @@ const customizeGoal = document.getElementById("customize-goal");
 const customizeAbout = document.getElementById("customize-about");
 const customizeNote = document.getElementById("customize-note");
 const customizeToneWrap = document.getElementById("customize-tone");
+const customizeLanguage = document.getElementById("customize-language");
 
 const DEFAULT_TONE = "friendly";
 let selectedTone = DEFAULT_TONE;
@@ -316,9 +318,14 @@ function fillCustomizeForm() {
   customizeGoal.value = userProfile.goal || "";
   customizeAbout.value = userProfile.about || "";
   applyToneSelection(userProfile.tone || DEFAULT_TONE);
+  if (customizeLanguage) customizeLanguage.value = userProfile.language || "";
   customizePhotoStatus.textContent = "";
   customizePhotoStatus.className = "upload-status";
   applyAvatar(pendingPhotoURL);
+}
+
+function userDocRef(uid) {
+  return doc(db, "users", uid);
 }
 
 async function loadProfile(uid) {
@@ -332,7 +339,22 @@ async function loadProfile(uid) {
   profileCorner.classList.remove("hidden");
   applyAvatar(userProfile.photoURL);
   fillCustomizeForm();
-  updatePlanBadge(userProfile.plan);
+
+  // plan/proExpiresAt live on the top-level users/{uid} doc (set server-side
+  // by /api/verify_payment), not on the profile/info subdocument above —
+  // read them separately rather than assuming they're part of userProfile.
+  try {
+    const userSnap = await getDoc(userDocRef(uid));
+    const userData = userSnap.exists() ? userSnap.data() : {};
+    updatePlanBadge(userData.plan);
+    applyProTheme(userData.plan === "pro");
+    updateProGateVisibility(userData.plan === "pro");
+  } catch (err) {
+    console.error("Failed to load plan status:", err);
+    updatePlanBadge(null);
+    applyProTheme(false);
+    updateProGateVisibility(false);
+  }
 }
 
 function clearProfileUI() {
@@ -340,7 +362,10 @@ function clearProfileUI() {
   profileCorner.classList.add("hidden");
   applyAvatar("");
   applyToneSelection(DEFAULT_TONE);
+  if (customizeLanguage) customizeLanguage.value = "";
   updatePlanBadge(null);
+  applyProTheme(false);
+  updateProGateVisibility(false);
 }
 
 // -------------------------------------
@@ -403,6 +428,7 @@ function openCustomize() {
   customizeNote.classList.add("hidden");
   if (deleteConfirmCard) deleteConfirmCard.classList.add("hidden");
   customizeOverlay.classList.remove("hidden");
+  loadReferralInfo();
 }
 
 function closeCustomize() {
@@ -560,6 +586,7 @@ customizeForm.addEventListener("submit", async (e) => {
     goal: customizeGoal.value.trim(),
     about: customizeAbout.value.trim(),
     tone: selectedTone,
+    language: customizeLanguage ? customizeLanguage.value : "",
     updatedAt: serverTimestamp(),
   };
 
@@ -583,8 +610,8 @@ customizeForm.addEventListener("submit", async (e) => {
 // the first place — no email/password — but keep this explicit and small).
 function profileForApi() {
   if (!userProfile) return null;
-  const { name, hobby, wantToBecome, goal, about, tone } = userProfile;
-  return { name, hobby, wantToBecome, goal, about, tone: tone || DEFAULT_TONE };
+  const { name, hobby, wantToBecome, goal, about, tone, language } = userProfile;
+  return { name, hobby, wantToBecome, goal, about, tone: tone || DEFAULT_TONE, language: language || "" };
 }
 
 // ==========================================
@@ -1410,10 +1437,15 @@ async function sendChatMessage(message, attachmentOrList) {
         statusHandle.stop();
         showLimitBanner(data.message);
         addMessage(chatWindow, data.message || "Daily message limit reached.", "system");
+        refreshUsageCounter();
         return;
       }
       throw new Error(data.error || "Server Error");
     }
+
+    // Fire-and-forget — keeps the "X of 20 used today" counter in sync
+    // without blocking the reply from rendering.
+    if (currentUser) refreshUsageCounter();
 
     // Keep the API-facing history text-only — attached files are only
     // needed for the turn they were sent on, not replayed into future
@@ -1564,7 +1596,310 @@ if (newChatBtn) {
   });
 }
 
-chatForm.addEventListener("submit", (e) => {
+// ==========================================
+// Punch AI - Export chat as Markdown
+// ==========================================
+const exportChatBtn = document.getElementById("export-chat-btn");
+if (exportChatBtn) {
+  exportChatBtn.addEventListener("click", () => {
+    if (chatHistory.length === 0) {
+      alert("There's nothing in this chat to export yet.");
+      return;
+    }
+    const now = new Date();
+    const stamp = now.toISOString().slice(0, 10);
+    const lines = [`# Punch chat export — ${stamp}`, ""];
+    chatHistory.forEach((turn) => {
+      const speaker = turn.role === "model" ? "Punch" : "You";
+      const text = (turn.parts && turn.parts[0] && turn.parts[0].text) || "";
+      lines.push(`**${speaker}:**`, "", text, "");
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `punch-chat-${stamp}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+}
+
+// ==========================================
+// Punch AI - Referral rewards
+// ==========================================
+const referralSection = document.getElementById("referral-section");
+const referralCodeText = document.getElementById("referral-code-text");
+const referralCopyBtn = document.getElementById("referral-copy-btn");
+const referralCountText = document.getElementById("referral-count-text");
+const referralBonusAmount = document.getElementById("referral-bonus-amount");
+
+async function loadReferralInfo() {
+  if (!referralSection || !currentUser) return;
+  try {
+    const token = await currentUser.getIdToken();
+    const res = await fetch("/api/referral/code", { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (!res.ok) return;
+    referralCodeText.textContent = data.code;
+    referralBonusAmount.textContent = data.bonusPerReferral;
+    referralCountText.textContent =
+      data.referralCount > 0
+        ? `${data.referralCount} friend${data.referralCount === 1 ? "" : "s"} joined with your code so far.`
+        : "Share your code — you'll see it here once someone joins.";
+    referralSection.classList.remove("hidden");
+  } catch (err) {
+    console.error("Failed to load referral info:", err);
+  }
+}
+
+if (referralCopyBtn) {
+  referralCopyBtn.addEventListener("click", async () => {
+    const code = referralCodeText.textContent.trim();
+    if (!code || code.includes("•")) return;
+    const link = `${window.location.origin}/?ref=${code}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      referralCopyBtn.textContent = "Copied!";
+      setTimeout(() => (referralCopyBtn.textContent = "Copy"), 1500);
+    } catch (err) {
+      console.error("Clipboard write failed:", err);
+    }
+  });
+}
+
+// Auto-redeem a ?ref=CODE link on first visit after signup — stashed in
+// sessionStorage since the code needs to survive the login/signup modal
+// flow (the referred user isn't authenticated yet when the link is first
+// opened, so redemption itself only happens once onAuthStateChanged fires
+// with a real signed-in user, below).
+(function stashReferralCodeFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const ref = params.get("ref");
+  if (ref) sessionStorage.setItem("punch_pending_referral", ref.trim().toUpperCase());
+})();
+
+async function redeemPendingReferralIfAny(user) {
+  const pending = sessionStorage.getItem("punch_pending_referral");
+  if (!pending || !user) return;
+  sessionStorage.removeItem("punch_pending_referral");
+  try {
+    const token = await user.getIdToken();
+    await fetch("/api/referral/redeem", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ code: pending }),
+    });
+    refreshUsageCounter();
+  } catch (err) {
+    console.error("Referral redemption failed:", err);
+  }
+}
+
+// ==========================================
+// Punch AI - Persistent memory (Punch Pro)
+// ==========================================
+const memoryBtn = document.getElementById("memory-btn");
+const memoryOverlay = document.getElementById("memory-overlay");
+const memoryClose = document.getElementById("memory-close");
+const memoryLockedNote = document.getElementById("memory-locked-note");
+const memoryUnlocked = document.getElementById("memory-unlocked");
+const memoryList = document.getElementById("memory-list");
+const memoryAddForm = document.getElementById("memory-add-form");
+const memoryAddInput = document.getElementById("memory-add-input");
+const memoryClearBtn = document.getElementById("memory-clear-btn");
+
+function renderMemoryList(facts) {
+  memoryList.innerHTML = "";
+  if (!facts || facts.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "memory-empty";
+    empty.textContent = "Nothing remembered yet — it builds up naturally as you chat.";
+    memoryList.appendChild(empty);
+    return;
+  }
+  facts.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "memory-item";
+    const text = document.createElement("span");
+    text.textContent = item.fact;
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "memory-item-remove";
+    removeBtn.setAttribute("aria-label", "Forget this");
+    removeBtn.textContent = "\u00d7";
+    removeBtn.addEventListener("click", async () => {
+      const token = await currentUser.getIdToken();
+      await fetch("/api/memory/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ id: item.id }),
+      });
+      loadMemoryList();
+    });
+    row.appendChild(text);
+    row.appendChild(removeBtn);
+    memoryList.appendChild(row);
+  });
+}
+
+async function loadMemoryList() {
+  if (!currentUser) return;
+  const token = await currentUser.getIdToken();
+  const res = await fetch("/api/memory/list", { headers: { Authorization: `Bearer ${token}` } });
+  const data = await res.json();
+  if (res.ok) renderMemoryList(data.facts);
+}
+
+function openMemoryModal() {
+  if (!currentUser) {
+    modal.classList.remove("hidden");
+    return;
+  }
+  memoryOverlay.classList.remove("hidden");
+  if (isProUserGlobal) {
+    memoryLockedNote.classList.add("hidden");
+    memoryUnlocked.classList.remove("hidden");
+    loadMemoryList();
+  } else {
+    memoryLockedNote.classList.remove("hidden");
+    memoryUnlocked.classList.add("hidden");
+  }
+}
+
+if (memoryBtn) memoryBtn.addEventListener("click", openMemoryModal);
+if (memoryClose) memoryClose.addEventListener("click", () => memoryOverlay.classList.add("hidden"));
+if (memoryOverlay) {
+  memoryOverlay.addEventListener("click", (e) => {
+    if (e.target === memoryOverlay) memoryOverlay.classList.add("hidden");
+  });
+}
+if (memoryAddForm) {
+  memoryAddForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fact = memoryAddInput.value.trim();
+    if (!fact || !currentUser) return;
+    const token = await currentUser.getIdToken();
+    const res = await fetch("/api/memory/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ fact }),
+    });
+    if (res.ok) {
+      memoryAddInput.value = "";
+      loadMemoryList();
+    }
+  });
+}
+if (memoryClearBtn) {
+  memoryClearBtn.addEventListener("click", async () => {
+    if (!currentUser || !confirm("Clear everything Punch remembers about you?")) return;
+    const token = await currentUser.getIdToken();
+    await fetch("/api/memory/clear", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    loadMemoryList();
+  });
+}
+
+// ==========================================
+// Punch AI - Document templates (Punch Pro)
+// ==========================================
+const templatesBtn = document.getElementById("templates-btn");
+const templatesOverlay = document.getElementById("templates-overlay");
+const templatesClose = document.getElementById("templates-close");
+const templatesLockedNote = document.getElementById("templates-locked-note");
+const templatesUnlocked = document.getElementById("templates-unlocked");
+const templatesPicker = document.getElementById("templates-picker");
+const templatesForm = document.getElementById("templates-form");
+const templatesFormLabel = document.getElementById("templates-form-label");
+const templatesDetails = document.getElementById("templates-details");
+const templatesStatus = document.getElementById("templates-status");
+const templatesGenerateBtn = document.getElementById("templates-generate-btn");
+let selectedTemplateId = null;
+
+const TEMPLATE_PLACEHOLDERS = {
+  resume: "Name, target role, work history, education, skills...",
+  invoice: "Your business name, client name, line items with quantities/prices...",
+  report: "Topic, key points, data or findings to include...",
+};
+
+function openTemplatesModal() {
+  if (!currentUser) {
+    modal.classList.remove("hidden");
+    return;
+  }
+  templatesOverlay.classList.remove("hidden");
+  templatesForm.classList.add("hidden");
+  templatesStatus.textContent = "";
+  selectedTemplateId = null;
+  if (isProUserGlobal) {
+    templatesLockedNote.classList.add("hidden");
+    templatesUnlocked.classList.remove("hidden");
+  } else {
+    templatesLockedNote.classList.remove("hidden");
+    templatesUnlocked.classList.add("hidden");
+  }
+}
+
+if (templatesBtn) templatesBtn.addEventListener("click", openTemplatesModal);
+if (templatesClose) templatesClose.addEventListener("click", () => templatesOverlay.classList.add("hidden"));
+if (templatesOverlay) {
+  templatesOverlay.addEventListener("click", (e) => {
+    if (e.target === templatesOverlay) templatesOverlay.classList.add("hidden");
+  });
+}
+if (templatesPicker) {
+  templatesPicker.querySelectorAll(".template-option").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedTemplateId = btn.dataset.template;
+      templatesPicker.querySelectorAll(".template-option").forEach((b) => b.classList.remove("selected"));
+      btn.classList.add("selected");
+      templatesFormLabel.textContent = `Details for your ${btn.textContent.trim()}`;
+      templatesDetails.placeholder = TEMPLATE_PLACEHOLDERS[selectedTemplateId] || "Add details...";
+      templatesForm.classList.remove("hidden");
+      templatesDetails.focus();
+    });
+  });
+}
+if (templatesForm) {
+  templatesForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!selectedTemplateId || !currentUser) return;
+    const details = templatesDetails.value.trim();
+    if (!details) return;
+    templatesGenerateBtn.disabled = true;
+    templatesStatus.textContent = "Generating your document...";
+    templatesStatus.className = "templates-status";
+    try {
+      const token = await currentUser.getIdToken();
+      const res = await fetch("/api/generate_document", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ template: selectedTemplateId, details }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not generate document");
+      const link = document.createElement("a");
+      link.href = `data:application/pdf;base64,${data.data}`;
+      link.download = data.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      templatesStatus.textContent = "Done — your PDF has started downloading.";
+      templatesStatus.className = "templates-status success";
+    } catch (err) {
+      templatesStatus.textContent = err.message;
+      templatesStatus.className = "templates-status error";
+    } finally {
+      templatesGenerateBtn.disabled = false;
+    }
+  });
+}
+
+
   e.preventDefault();
 
   const message = chatInput.value.trim();
@@ -2005,6 +2340,56 @@ function updatePlanBadge(plan) {
   }
 }
 
+// -------------------------------------
+// Pro visual theme
+// -------------------------------------
+// A subtle, distinct look for Pro accounts — a gold accent on the shell
+// (nav, sidebar, chat card) via a body class, rather than a whole separate
+// stylesheet. Also toggles which sidebar buttons show as directly usable
+// vs. locked-behind-Pro at a glance.
+function applyProTheme(isPro) {
+  isProUserGlobal = !!isPro;
+  document.body.classList.toggle("is-pro", !!isPro);
+}
+
+function updateProGateVisibility(isPro) {
+  document.querySelectorAll(".rail-btn-pro").forEach((btn) => {
+    btn.classList.toggle("rail-btn-pro-unlocked", isPro);
+  });
+}
+
+// -------------------------------------
+// Daily usage counter ("X of 20 messages used today")
+// -------------------------------------
+const usageCounterEl = document.getElementById("usage-counter");
+
+function renderUsageCounter(plan, used, limit) {
+  if (!usageCounterEl) return;
+  if (!currentUser || plan === "pro") {
+    usageCounterEl.classList.add("hidden");
+    return;
+  }
+  const left = Math.max(0, limit - used);
+  usageCounterEl.textContent = `${used} of ${limit} messages used today`;
+  usageCounterEl.classList.toggle("usage-warning", left <= 3);
+  usageCounterEl.classList.remove("hidden");
+}
+
+async function refreshUsageCounter() {
+  if (!usageCounterEl || !currentUser) {
+    if (usageCounterEl) usageCounterEl.classList.add("hidden");
+    return;
+  }
+  try {
+    const token = await currentUser.getIdToken();
+    const res = await fetch("/api/usage", { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    renderUsageCounter(data.plan, data.used, data.limit);
+  } catch (err) {
+    console.error("Failed to load usage:", err);
+  }
+}
+
 // Reopens the login/signup overlay, optionally with a specific note (used
 // both for the "guest limit reached" case and the plain "Continue as Guest"
 // exit path).
@@ -2046,6 +2431,8 @@ onAuthStateChanged(auth, (user) => {
     watchChatList(user.uid);
     loadProfile(user.uid);
     syncStreak(user.uid);
+    refreshUsageCounter();
+    redeemPendingReferralIfAny(user);
 
     console.log("Logged in:", user.email);
   } else {
@@ -2066,6 +2453,7 @@ onAuthStateChanged(auth, (user) => {
     appendStarterChips(chatWindow);
     chatListEl.innerHTML = '<div class="chat-list-empty">Log in to see your saved chats</div>';
     clearProfileUI();
+    if (usageCounterEl) usageCounterEl.classList.add("hidden");
     closeCustomize();
     stopSpeaking();
     hideClarifyCard();

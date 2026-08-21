@@ -1245,6 +1245,18 @@ a { color: inherit; text-decoration: none; }
 }
 .guest-banner-signup:hover { opacity: 0.9; }
 
+/* ---------- Daily usage counter above the chat input ---------- */
+.usage-counter {
+  padding: 6px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+}
+.usage-counter.hidden { display: none; }
+.usage-counter.usage-warning { color: #ffb347; }
+
+
 /* ---------- Usage streak badge (sidebar) ---------- */
 .streak-badge {
   padding: 8px 14px;
@@ -1487,7 +1499,8 @@ a { color: inherit; text-decoration: none; }
   color: var(--text-dim);
 }
 .customize-group input,
-.customize-group textarea {
+.customize-group textarea,
+.customize-group select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1500,7 +1513,8 @@ a { color: inherit; text-decoration: none; }
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .customize-group input:focus,
-.customize-group textarea:focus {
+.customize-group textarea:focus,
+.customize-group select:focus {
   border-color: var(--violet);
   box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15);
 }
@@ -2155,4 +2169,431 @@ a { color: inherit; text-decoration: none; }
 
 @media (max-width: 860px) {
   .clarify-card { bottom: 70px; left: 10px; right: 10px; }
+}
+/* ==========================================
+   Punch Pro — premium theme + new Pro features
+   ========================================== */
+
+:root {
+  --gold-a: #ffe3a3;
+  --gold-b: #ffb648;
+  --gold-c: #ff8a3d;
+  --gold-glow: rgba(255, 166, 64, 0.35);
+}
+
+/* A rich, unmistakably premium gold treatment across the shell for Pro
+   accounts — applied via a body class (see script.js applyProTheme).
+   Layered on top of the existing violet design rather than replacing it,
+   so the app still feels like the same product, just elevated. */
+body.is-pro .navbar {
+  border-bottom-color: rgba(255, 182, 72, 0.4);
+  box-shadow: 0 1px 0 0 rgba(255, 182, 72, 0.12);
+}
+body.is-pro .logo-mark {
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c)) !important;
+  box-shadow: 0 0 18px -2px var(--gold-glow);
+}
+
+/* Animated gradient border around the main chat card — a slowly rotating
+   conic gradient behind the card, masked to a thin ring, so Pro feels
+   alive rather than a static color swap. */
+body.is-pro .chat-card {
+  position: relative;
+  border-color: transparent;
+  background:
+    linear-gradient(var(--card), var(--card)) padding-box,
+    conic-gradient(from var(--pro-angle, 0deg), var(--gold-a), var(--gold-c), var(--violet-bright), var(--gold-a)) border-box;
+  border: 1.5px solid transparent;
+  box-shadow: 0 30px 80px -30px var(--gold-glow), 0 30px 60px -30px rgba(0, 0, 0, 0.65);
+  animation: pro-border-spin 8s linear infinite;
+}
+@property --pro-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes pro-border-spin {
+  from { --pro-angle: 0deg; }
+  to { --pro-angle: 360deg; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.is-pro .chat-card { animation: none; }
+}
+
+body.is-pro .send-btn,
+body.is-pro #send-btn {
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
+}
+body.is-pro .profile-avatar {
+  box-shadow: 0 0 0 2px var(--gold-b), 0 0 14px -2px var(--gold-glow);
+}
+body.is-pro .btn-primary {
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
+  color: #201404;
+}
+
+/* Shimmering Pro badge — a soft light sweep every few seconds instead of
+   a static pill, so the badge itself reads as a small reward. */
+.plan-badge {
+  position: relative;
+  overflow: hidden;
+}
+.plan-badge::after {
+  content: "";
+  position: absolute;
+  top: 0; left: -60%;
+  width: 40%; height: 100%;
+  background: linear-gradient(115deg, transparent, rgba(255, 255, 255, 0.65), transparent);
+  animation: badge-shimmer 3.2s ease-in-out infinite;
+}
+@keyframes badge-shimmer {
+  0% { left: -60%; }
+  55% { left: 130%; }
+  100% { left: 130%; }
+}
+
+/* Sidebar rail buttons gated behind Pro (Memory, Templates) — shown to
+   everyone so free users discover the feature, but visually marked as
+   locked until upgraded. rail-btn-pro-unlocked (added by
+   updateProGateVisibility) drops the tag + dimmed look for Pro users. */
+.rail-btn-pro {
+  position: relative;
+  opacity: 0.72;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.rail-btn-pro:hover { opacity: 1; transform: translateX(2px); }
+.rail-pro-tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #201404;
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: auto;
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  transition: opacity 0.18s ease, max-width 0.22s ease;
+  box-shadow: 0 0 10px -2px var(--gold-glow);
+}
+.rail-btn-pro:hover .rail-pro-tag { opacity: 1; max-width: 40px; }
+.rail-btn-pro-unlocked { opacity: 1; }
+.rail-btn-pro-unlocked .rail-pro-tag { display: none; }
+.rail-btn-pro-unlocked svg { color: var(--gold-b); }
+
+/* ---------- Referral panel (inside Customize modal) ---------- */
+.referral-section {
+  margin: 20px 0 6px;
+  padding: 18px;
+  border: 1px solid rgba(255, 182, 72, 0.25);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(255, 182, 72, 0.1), transparent 55%),
+    #14111f;
+  position: relative;
+  overflow: hidden;
+}
+.referral-section.hidden { display: none; }
+.referral-section h3 {
+  margin: 0 0 4px;
+  font-size: 15.5px;
+  font-family: var(--font-display);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.referral-section h3::before {
+  content: "🎁";
+  font-size: 16px;
+}
+.referral-section p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.referral-code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.referral-code-text {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  background: #0d0b16;
+  border: 1px dashed rgba(255, 182, 72, 0.4);
+  border-radius: 10px;
+  padding: 10px 14px;
+  flex: 1;
+  color: var(--gold-a);
+  text-align: center;
+}
+.referral-copy-btn {
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
+  color: #201404;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.referral-copy-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -8px var(--gold-glow);
+}
+.referral-copy-btn:active { transform: translateY(0); }
+.referral-count-text {
+  margin: 12px 0 0 !important;
+  font-size: 12.5px !important;
+  color: var(--text-dim);
+}
+
+/* ---------- Memory / Templates modals ---------- */
+.memory-card, .templates-card { max-width: 470px; }
+.memory-card .customize-header h2::before,
+.templates-card .customize-header h2::before {
+  content: "";
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
+  margin-right: 8px;
+  box-shadow: 0 0 8px -1px var(--gold-glow);
+}
+.memory-locked-note, .templates-locked-note {
+  font-size: 13.5px;
+  color: var(--text-dim);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 182, 72, 0.08), transparent 60%),
+    #14111f;
+  border: 1px solid rgba(255, 182, 72, 0.2);
+  border-radius: 14px;
+  padding: 22px 16px;
+  text-align: center;
+  line-height: 1.6;
+}
+.memory-locked-note.hidden, .templates-locked-note.hidden { display: none; }
+.memory-locked-note a, .templates-locked-note a {
+  color: var(--gold-b);
+  font-weight: 600;
+}
+
+.memory-add-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.memory-add-form input {
+  flex: 1;
+  background: #0d0b16;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 13px;
+  color: var(--text);
+  font-size: 13.5px;
+  transition: border-color 0.15s ease;
+}
+.memory-add-form input:focus {
+  outline: none;
+  border-color: var(--violet-bright);
+}
+.memory-add-form button {
+  background: var(--violet);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 18px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.memory-add-form button:hover { opacity: 0.9; transform: translateY(-1px); }
+
+.memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin-bottom: 14px;
+}
+.memory-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #14111f;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 13px;
+  font-size: 13px;
+  transition: border-color 0.15s ease;
+}
+.memory-item:hover { border-color: rgba(255, 182, 72, 0.3); }
+.memory-item span { line-height: 1.45; }
+.memory-item-remove {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 17px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+.memory-item-remove:hover { color: #f87171; transform: scale(1.15); }
+.memory-empty {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 26px 10px;
+}
+.memory-clear-btn {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 12px;
+  padding: 11px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.memory-clear-btn:hover { color: #f87171; border-color: #f87171; }
+
+.templates-picker {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.template-option {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: #14111f;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 8px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 500;
+  transition: border-color 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+.template-option-icon {
+  font-size: 24px;
+  transition: transform 0.18s ease;
+}
+.template-option:hover {
+  border-color: var(--gold-b);
+  color: var(--text);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px -14px var(--gold-glow);
+}
+.template-option:hover .template-option-icon { transform: scale(1.15); }
+.template-option.selected {
+  border-color: var(--gold-b);
+  color: var(--text);
+  background: radial-gradient(circle at 50% 0%, rgba(255, 182, 72, 0.14), transparent 65%), #14111f;
+  box-shadow: 0 12px 28px -14px var(--gold-glow);
+}
+.templates-form { margin-top: 18px; animation: auth-rise 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+.templates-form.hidden { display: none; }
+.templates-form label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+.templates-form textarea {
+  width: 100%;
+  background: #0d0b16;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 13px;
+  color: var(--text);
+  font-size: 13.5px;
+  resize: vertical;
+  margin-bottom: 10px;
+  transition: border-color 0.15s ease;
+}
+.templates-form textarea:focus {
+  outline: none;
+  border-color: var(--violet-bright);
+}
+.templates-status {
+  font-size: 12.5px;
+  min-height: 16px;
+  margin: 0 0 10px;
+}
+.templates-status.success { color: #4ade80; }
+.templates-status.error { color: #f87171; }
+#templates-generate-btn {
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
+  color: #201404;
+}
+
+/* ---------- Pricing page: subscription status / renewal ---------- */
+.subscription-status {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(255, 182, 72, 0.08);
+  border: 1px solid rgba(255, 182, 72, 0.2);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.subscription-status.hidden { display: none; }
+.subscription-status.expiring-soon {
+  color: #ffb347;
+  background: rgba(255, 179, 71, 0.1);
+  border-color: rgba(255, 179, 71, 0.35);
+}
+
+.watchlist-email-note {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  background: rgba(139, 92, 246, 0.08);
+  border-radius: 8px;
+  border: 1px solid rgba(139, 92, 246, 0.18);
+}
+
+/* ---------- Pricing page: premium Pro card ---------- */
+.pricing-card-pro {
+  position: relative;
+  border-color: transparent !important;
+  background:
+    linear-gradient(180deg, #1a1530, #12101f) padding-box,
+    linear-gradient(160deg, var(--gold-a), var(--violet-bright) 55%, var(--gold-c)) border-box;
+  border: 1.5px solid transparent;
+  box-shadow: 0 40px 90px -35px var(--gold-glow), 0 30px 60px -30px rgba(0, 0, 0, 0.6);
+}
+.pricing-badge {
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c)) !important;
+  color: #201404 !important;
+  box-shadow: 0 6px 18px -6px var(--gold-glow);
+}
+#upgrade-btn {
+  background: linear-gradient(135deg, var(--gold-a), var(--gold-c));
+  color: #201404;
+  font-weight: 700;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+#upgrade-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 32px -12px var(--gold-glow);
 }

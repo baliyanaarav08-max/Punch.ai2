@@ -80,6 +80,20 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
           <span class="rail-label">Tech Desk</span>
         </a>
+        <button type="button" id="export-chat-btn" class="rail-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span class="rail-label">Export chat</span>
+        </button>
+        <button type="button" id="memory-btn" class="rail-btn rail-btn-pro">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A5.5 5.5 0 0 0 4 7.5v.879a2 2 0 0 1-.586 1.414L2.5 10.707a1 1 0 0 0 0 1.414l.914.914A2 2 0 0 1 4 14.45V16.5A5.5 5.5 0 0 0 9.5 22h.5"/><path d="M14.5 2A5.5 5.5 0 0 1 20 7.5v.879a2 2 0 0 0 .586 1.414l.914.914a1 1 0 0 1 0 1.414l-.914.914a2 2 0 0 0-.586 1.414V16.5A5.5 5.5 0 0 1 14.5 22h-.5"/></svg>
+          <span class="rail-label">Memory</span>
+          <span class="rail-pro-tag">Pro</span>
+        </button>
+        <button type="button" id="templates-btn" class="rail-btn rail-btn-pro">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+          <span class="rail-label">Templates</span>
+          <span class="rail-pro-tag">Pro</span>
+        </button>
       </nav>
       <div class="chat-search-row">
         <input type="text" id="chat-search-input" class="chat-search-input" placeholder="Search chats..." autocomplete="off" />
@@ -104,6 +118,7 @@
         <div id="clarify-options" class="clarify-options"></div>
       </div>
       <div id="chat-attach-preview" class="chat-attach-preview hidden"></div>
+      <div id="usage-counter" class="usage-counter hidden"></div>
       <div id="guest-banner" class="guest-banner hidden">
         <span id="guest-banner-text">Trying Punch as a guest</span>
         <button type="button" id="guest-banner-signup" class="guest-banner-signup">Create account</button>
@@ -258,6 +273,30 @@
       </div>
 
       <div class="customize-group">
+        <label for="customize-language">Reply language</label>
+        <select id="customize-language">
+          <option value="">Match whatever language I write in</option>
+          <option value="English">English</option>
+          <option value="Hindi">Hindi</option>
+          <option value="Spanish">Spanish</option>
+          <option value="French">French</option>
+          <option value="German">German</option>
+          <option value="Portuguese">Portuguese</option>
+          <option value="Arabic">Arabic</option>
+          <option value="Russian">Russian</option>
+          <option value="Chinese">Chinese</option>
+          <option value="Japanese">Japanese</option>
+          <option value="Bengali">Bengali</option>
+          <option value="Tamil">Tamil</option>
+          <option value="Telugu">Telugu</option>
+          <option value="Marathi">Marathi</option>
+          <option value="Gujarati">Gujarati</option>
+          <option value="Punjabi">Punjabi</option>
+          <option value="Urdu">Urdu</option>
+        </select>
+      </div>
+
+      <div class="customize-group">
         <label for="customize-about">Anything else Punch should know</label>
         <textarea id="customize-about" rows="3" placeholder="Optional — any other context" maxlength="500"></textarea>
       </div>
@@ -268,6 +307,16 @@
         <span class="btn-label">Save</span>
       </button>
     </form>
+
+    <div id="referral-section" class="referral-section hidden">
+      <h3>Invite a friend</h3>
+      <p>You both get <strong id="referral-bonus-amount">10</strong> bonus messages when they join with your code.</p>
+      <div class="referral-code-row">
+        <span id="referral-code-text" class="referral-code-text">••••••••</span>
+        <button type="button" id="referral-copy-btn" class="referral-copy-btn">Copy</button>
+      </div>
+      <p id="referral-count-text" class="referral-count-text"></p>
+    </div>
 
     <div class="customize-account-actions">
       <button type="button" id="customize-logout-btn" class="customize-logout-btn">Log Out</button>
@@ -280,6 +329,68 @@
         <button type="button" id="delete-confirm-cancel" class="delete-confirm-cancel">Cancel</button>
         <button type="button" id="delete-confirm-yes" class="delete-confirm-yes">Yes, delete everything</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============== MEMORY MODAL (Punch Pro) ============== -->
+<div id="memory-overlay" class="customize-overlay hidden">
+  <div class="customize-card memory-card">
+    <div class="customize-header">
+      <h2>What Punch remembers</h2>
+      <p>Facts picked up from your chats, used to make replies more personal. Pro feature.</p>
+      <button type="button" id="memory-close" class="customize-close" aria-label="Close">&times;</button>
+    </div>
+
+    <div id="memory-locked-note" class="memory-locked-note hidden">
+      Persistent memory is a <a href="/pricing">Punch Pro</a> feature — upgrade to let Punch remember things about you across chats.
+    </div>
+
+    <div id="memory-unlocked" class="hidden">
+      <form id="memory-add-form" class="memory-add-form">
+        <input id="memory-add-input" type="text" placeholder="Add something for Punch to remember..." maxlength="220" autocomplete="off" />
+        <button type="submit">Add</button>
+      </form>
+      <div id="memory-list" class="memory-list"></div>
+      <button type="button" id="memory-clear-btn" class="memory-clear-btn">Clear all memory</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============== DOCUMENT TEMPLATES MODAL (Punch Pro) ============== -->
+<div id="templates-overlay" class="customize-overlay hidden">
+  <div class="customize-card templates-card">
+    <div class="customize-header">
+      <h2>Document templates</h2>
+      <p>Fill in a few details and get a ready-made PDF. Pro feature.</p>
+      <button type="button" id="templates-close" class="customize-close" aria-label="Close">&times;</button>
+    </div>
+
+    <div id="templates-locked-note" class="memory-locked-note hidden">
+      Document templates are a <a href="/pricing">Punch Pro</a> feature — upgrade to generate resumes, invoices, and reports.
+    </div>
+
+    <div id="templates-unlocked" class="hidden">
+      <div id="templates-picker" class="templates-picker">
+        <button type="button" class="template-option" data-template="resume">
+          <span class="template-option-icon">📄</span>
+          <span>Resume</span>
+        </button>
+        <button type="button" class="template-option" data-template="invoice">
+          <span class="template-option-icon">🧾</span>
+          <span>Invoice</span>
+        </button>
+        <button type="button" class="template-option" data-template="report">
+          <span class="template-option-icon">📊</span>
+          <span>Report</span>
+        </button>
+      </div>
+      <form id="templates-form" class="templates-form hidden">
+        <label id="templates-form-label" for="templates-details">Details</label>
+        <textarea id="templates-details" rows="8" placeholder="Paste or type the details for your document..."></textarea>
+        <p id="templates-status" class="templates-status"></p>
+        <button type="submit" id="templates-generate-btn" class="punch-auth-submit">Generate PDF</button>
+      </form>
     </div>
   </div>
 </div>
