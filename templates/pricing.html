@@ -40,7 +40,7 @@
     <div class="pricing-card">
       <div class="pricing-card-head">
         <h2>Free</h2>
-        <div class="pricing-price"><span class="pricing-amount">₹0</span><span class="pricing-period">/forever</span></div>
+        <div class="pricing-price"><span class="pricing-amount"><small>₹</small>0</span><span class="pricing-period">/forever</span></div>
         <p class="pricing-tagline">Everything you need for everyday use</p>
       </div>
       <ul class="pricing-features">
@@ -49,6 +49,8 @@
         <li>Image, video &amp; PDF understanding</li>
         <li>Voice mode</li>
         <li>Chat history &amp; profile customization</li>
+        <li>Referral rewards — invite friends, earn bonus messages</li>
+        <li>Replies in your preferred language</li>
       </ul>
       <button type="button" class="pricing-cta pricing-cta-ghost" disabled>Your current plan</button>
     </div>
@@ -57,7 +59,7 @@
       <div class="pricing-badge">Most popular</div>
       <div class="pricing-card-head">
         <h2>Punch Pro</h2>
-        <div class="pricing-price"><span class="pricing-amount">₹{{ pro_price }}</span><span class="pricing-period">/month</span></div>
+        <div class="pricing-price"><span class="pricing-amount"><small>₹</small>{{ pro_price }}</span><span class="pricing-period">/month</span></div>
         <p class="pricing-tagline">For daily power users</p>
       </div>
       <ul class="pricing-features">
@@ -76,8 +78,41 @@
   </div>
 </section>
 
+<section class="panel-section" style="padding-top:0;">
+  <div class="trust-strip">
+    <span class="trust-item"><span class="trust-item-icon">🔒</span> Secure checkout via Cashfree</span>
+    <span class="trust-item"><span class="trust-item-icon">⚡</span> Pro activates instantly</span>
+    <span class="trust-item"><span class="trust-item-icon">🔁</span> No auto-renewal — renew only when you choose</span>
+  </div>
+
+  <div class="faq-section">
+    <div class="faq-item">
+      <input type="radio" name="faq" id="faq-1" />
+      <label for="faq-1">Is Punch Pro a recurring subscription?</label>
+      <div class="faq-answer"><p>No. Pro lasts 30 days from the day you pay. There's no auto-charge — you renew manually from this page whenever you want to.</p></div>
+    </div>
+    <div class="faq-item">
+      <input type="radio" name="faq" id="faq-2" />
+      <label for="faq-2">What happens when my Pro period ends?</label>
+      <div class="faq-answer"><p>You drop back to the Free plan automatically. Your chat history, memory, and profile stay exactly as they were.</p></div>
+    </div>
+    <div class="faq-item">
+      <input type="radio" name="faq" id="faq-3" />
+      <label for="faq-3">How is my payment handled?</label>
+      <div class="faq-answer"><p>Through Cashfree's secure checkout. Punch never sees or stores your card, UPI, or bank details directly.</p></div>
+    </div>
+    <div class="faq-item">
+      <input type="radio" name="faq" id="faq-4" />
+      <label for="faq-4">Can I use Punch without paying anything?</label>
+      <div class="faq-answer"><p>Yes — the Free plan is free forever: 20 messages a day, live web search, voice mode, and more.</p></div>
+    </div>
+  </div>
+</section>
+
 <footer class="footer">
+
   <span>Punch — simple pricing, no surprises.</span>
+
 </footer>
 
 <script type="module" src="{{ url_for('static', filename='pricing.js') }}"></script>

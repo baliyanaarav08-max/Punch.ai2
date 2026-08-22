@@ -3055,3 +3055,278 @@ body::after {
   .tech-hero::after,
   .chat-card::before { animation: none; }
 }
+
+/* ==========================================
+   New features + world-class polish pass
+   ========================================== */
+
+/* ---------- Critical mobile fix: 16px inputs ----------
+   Every text input/textarea/select on the site was under 16px, which
+   makes iOS Safari forcibly zoom the whole page in the instant you tap
+   into a field — jarring, and the single biggest "feels unpolished on
+   phone" bug a site can have. Bumping every field to 16px on touch-sized
+   viewports kills the zoom without changing how anything looks on desktop. */
+@media (max-width: 860px) {
+  .chat-input-row input[type="text"],
+  .chat-search-input,
+  .watchlist-add-form input,
+  .punch-auth-group input,
+  .customize-group input,
+  .customize-group textarea,
+  .customize-group select,
+  .pricing-phone-group input {
+    font-size: 16px;
+  }
+}
+
+/* ---------- Touch targets ----------
+   Buttons that were sized for a mouse cursor get a comfortable minimum
+   tap height on touch-sized viewports — Apple/Google's own 44px guidance
+   — without puffing up the desktop versions. */
+@media (max-width: 860px) {
+  .btn-primary,
+  .btn-ghost,
+  .pricing-cta,
+  .new-chat-btn,
+  .watchlist-toggle,
+  .chip {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .chat-input-row button,
+  .attach-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* ---------- Feature highlight grid (Home) ---------- */
+.features-section { padding-top: 10px; }
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.feature-card {
+  background:
+    radial-gradient(circle at 20% 0%, rgba(139, 92, 246, 0.1), transparent 55%),
+    var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 26px 22px;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+  animation: rise-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.features-grid .feature-card:nth-child(1) { animation-delay: 0.05s; }
+.features-grid .feature-card:nth-child(2) { animation-delay: 0.1s; }
+.features-grid .feature-card:nth-child(3) { animation-delay: 0.15s; }
+.features-grid .feature-card:nth-child(4) { animation-delay: 0.2s; }
+.features-grid .feature-card:nth-child(5) { animation-delay: 0.25s; }
+.features-grid .feature-card:nth-child(6) { animation-delay: 0.3s; }
+.feature-card:hover {
+  transform: translateY(-5px);
+  border-color: var(--violet-dim);
+  box-shadow: 0 26px 50px -28px rgba(139, 92, 246, 0.4);
+}
+.feature-card.is-pro {
+  border-color: transparent;
+  background:
+    linear-gradient(180deg, #1a1530, #12101f) padding-box,
+    linear-gradient(160deg, var(--gold-a, #ffb976), var(--violet-bright) 60%, var(--gold-c, #ff9f43)) border-box;
+  border: 1.5px solid transparent;
+}
+.feature-card-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  background: rgba(139, 92, 246, 0.14);
+  margin-bottom: 16px;
+}
+.feature-card.is-pro .feature-card-icon {
+  background: linear-gradient(135deg, var(--gold-a, #ffb976), var(--gold-c, #ff9f43));
+}
+.feature-card h3 {
+  font-family: var(--font-display);
+  font-size: 16px;
+  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.feature-card p {
+  font-size: 13.5px;
+  color: var(--text-dim);
+  line-height: 1.55;
+  margin: 0;
+}
+.feature-pro-tag {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 1px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--gold-a, #ffb976), var(--gold-c, #ff9f43));
+  color: #201404;
+  font-weight: 700;
+}
+
+/* ---------- Trust strip (Pricing) ---------- */
+.trust-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  max-width: 900px;
+  margin: 0 auto 46px;
+}
+.trust-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.trust-item-icon { font-size: 14px; }
+
+/* ---------- Tech Desk quick badges ---------- */
+.tech-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 18px;
+}
+.tech-badges .trust-item {
+  padding: 7px 14px;
+  font-size: 12px;
+}
+
+/* ---------- FAQ accordion (pure CSS, no JS needed) ---------- */
+.faq-section {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.faq-item {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  background: var(--card);
+}
+.faq-item input {
+  display: none;
+}
+.faq-item label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 14.5px;
+  font-weight: 600;
+}
+.faq-item label::after {
+  content: "+";
+  font-size: 20px;
+  color: var(--violet-bright);
+  transition: transform 0.25s ease;
+  flex-shrink: 0;
+}
+.faq-item input:checked ~ label::after { transform: rotate(45deg); }
+.faq-answer {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+  padding: 0 20px;
+}
+.faq-item input:checked ~ .faq-answer {
+  max-height: 200px;
+  padding: 0 20px 18px;
+}
+.faq-answer p {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+@media (max-width: 860px) {
+  .features-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .feature-card { padding: 20px 16px; }
+  .trust-strip { gap: 8px; }
+  .trust-item { padding: 8px 14px; font-size: 12px; }
+}
+@media (max-width: 560px) {
+  .features-grid { grid-template-columns: 1fr; }
+  .faq-item label { font-size: 13.5px; padding: 14px 16px; }
+  .faq-answer { padding: 0 16px; }
+  .faq-item input:checked ~ .faq-answer { padding: 0 16px 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feature-card { animation: none; opacity: 1; transform: none; }
+}
+
+/* ---------- Real fix: mobile sidebar rail was never actually mobile ----------
+   .sidebar-rail's real (non-media) rule is declared LATER in this file
+   than the max-width:860px rule that turns it into a horizontal tab bar,
+   so at equal specificity the later, unconditional column layout was
+   silently winning at every viewport — the "compact tab bar on mobile"
+   never actually applied, and on top of that the rail now holds 6
+   buttons (New chat, Customize, Tech Desk, Export, Memory, Templates)
+   instead of the 3 it was designed for, so it needs a two-row wrap
+   rather than a single cramped line. Redeclaring here — after both
+   earlier rules — is what actually makes it win. */
+@media (max-width: 860px) {
+  .sidebar-rail {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+  }
+  .rail-btn {
+    flex: 1 1 30%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 9px 4px;
+    text-align: center;
+    border-radius: 10px;
+  }
+  .rail-btn .rail-label {
+    max-width: none;
+    opacity: 1;
+    font-size: 10.5px;
+    white-space: nowrap;
+    overflow: visible;
+  }
+  /* Touch has no hover state, so the "PRO" tag needs to just be visible
+     rather than waiting for a hover that will never come. */
+  .rail-btn-pro .rail-pro-tag {
+    opacity: 1;
+    max-width: none;
+    margin-left: 0;
+    font-size: 8px;
+    padding: 1px 5px;
+  }
+}
