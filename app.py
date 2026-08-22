@@ -1116,6 +1116,47 @@ def get_ai_reply(system_prompt, contents, max_tokens=2048, contents_fallback=Non
     raise RuntimeError(" | ".join(errors))
 
 
+# Helvetica/Times/Courier are fpdf2 "core fonts" — they can only render the
+# Latin-1/cp1252 character set. This app quotes prices in ₹ (Indian Rupees)
+# everywhere, and ₹ (U+20B9) is NOT in that set, so any generated invoice
+# or report that includes a price — which is virtually all of them — was
+# crashing generate_pdf_bytes with an unsupported-character exception. That
+# got silently caught and shown as a text fallback instead of a PDF, which
+# is what "PDF generation isn't working" actually was. _sanitize_pdf_text
+# rewrites the handful of characters the model reliably produces (₹, smart
+# quotes/dashes it favors, emoji) into cp1252-safe equivalents before a
+# single line reaches fpdf2, so this can't happen regardless of what
+# language or currency the reply ends up using.
+_PDF_TEXT_REPLACEMENTS = {
+    "\u20b9": "Rs. ",  # ₹ Indian Rupee sign
+    "\u2018": "'", "\u2019": "'",  # ‘ ’
+    "\u201c": '"', "\u201d": '"',  # “ ”
+    "\u2013": "-", "\u2014": "-",  # – —
+    "\u2026": "...",  # …
+    "\u00a0": " ",  # non-breaking space
+}
+
+
+def _sanitize_pdf_text(text):
+    """Makes text safe for fpdf2's core-font (Helvetica) renderer. Applies
+    the specific substitutions above, then drops any character still
+    outside Latin-1/cp1252 (e.g. emoji, Devanagari, CJK, Arabic) rather
+    than letting fpdf2 throw on it — a generated document with a couple of
+    missing glyphs beats no document at all."""
+    if not text:
+        return text
+    for bad, good in _PDF_TEXT_REPLACEMENTS.items():
+        text = text.replace(bad, good)
+    cleaned_chars = []
+    for ch in text:
+        try:
+            ch.encode("cp1252")
+            cleaned_chars.append(ch)
+        except UnicodeEncodeError:
+            pass  # drop anything cp1252/Helvetica genuinely can't render
+    return "".join(cleaned_chars)
+
+
 def generate_pdf_bytes(title, content):
     """Renders simple structured text into an actual PDF file using fpdf2.
 
@@ -1127,6 +1168,9 @@ def generate_pdf_bytes(title, content):
     """
     if FPDF is None:
         raise RuntimeError("fpdf2 isn't installed on the server (pip install fpdf2)")
+
+    title = _sanitize_pdf_text(title)
+    content = _sanitize_pdf_text(content)
 
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=18)
@@ -1226,6 +1270,38 @@ def parse_clarify_reply(reply_text):
 @app.route("/")
 def home():
     return render_template("index.html", assistant_name=ASSISTANT_NAME)
+
+
+@app.route("/sw.js")
+def service_worker():
+    """Served from the site root (not /static/sw.js) so its default scope
+    covers the whole app instead of just /static/ — required for the
+    Android TWA wrapper to register it against the whole site."""
+    resp = app.send_static_file("sw.js")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.route("/.well-known/assetlinks.json")
+def asset_links():
+    """Digital Asset Links file Android checks before letting the TWA open
+    without a Chrome address bar. ANDROID_PACKAGE_NAME/ANDROID_SHA256_FINGERPRINT
+    are placeholders — fill them in (env vars, or hardcode below) once you've
+    generated your Play signing key via Bubblewrap; see the TWA setup notes."""
+    package_name = os.environ.get("ANDROID_PACKAGE_NAME", "com.punch.app")
+    fingerprint = os.environ.get("ANDROID_SHA256_FINGERPRINT", "REPLACE_WITH_YOUR_SIGNING_CERT_SHA256_FINGERPRINT")
+    return jsonify(
+        [
+            {
+                "relation": ["delegate_permission/common.handle_all_urls"],
+                "target": {
+                    "namespace": "android_app",
+                    "package_name": package_name,
+                    "sha256_cert_fingerprints": [fingerprint],
+                },
+            }
+        ]
+    )
 
 
 @app.route("/tech")
